@@ -5,6 +5,8 @@ default-run = "libreomr"
 edition = "2024"
 rust-version = "1.92"
 description = "Interactive, cross-platform optical music recognition prototype"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/kabakakao/libreOMR"
 exclude = ["/local/**", "/dist/**"]
 
 [features]
@@ -13,7 +15,7 @@ desktop = ["dep:eframe", "dep:egui-phosphor", "dep:rfd", "dep:tiny-skia", "dep:o
 ui-screenshot = ["desktop", "eframe/__screenshot"]
 
 [[bin]]
-name = "libreomr"
+name = "libreOMR"
 path = "src/main.rs"
 required-features = ["desktop"]
 
