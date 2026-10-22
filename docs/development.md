@@ -4,6 +4,32 @@ Diese Dokumentation enthält Architektur, Erkennungsgrenzen und lokale
 Regressionstests. Alle Shell-Beispiele werden im Projekt-Hauptordner ausgeführt.
 Die Anleitung zur Nutzung steht in der [README](../README.md).
 
+## CI-Laufzeiten
+
+Die Bild- und Vorlagenvergleiche benötigen auch optimierte Abhängigkeiten.
+Der Workflow verwendet deshalb das Profil `ci` mit `opt-level = 2` für Tests
+und Builds. Im eigenen Projektcode bleiben Debug-Assertions und
+Überlaufprüfungen aktiv; Abhängigkeiten verwenden dafür die Release-Einstellungen.
+Reduzierte Debug-Informationen und deaktivierte inkrementelle Kompilierung begrenzen
+Build- und Cache-Größe. Lokal lässt sich derselbe Lauf so ausführen:
+
+```sh
+cargo test --profile ci --locked
+cargo build --profile ci --locked
+```
+
+Alle Rust-Tests und Binärdateien werden weiterhin auf Linux, Windows und
+macOS geprüft. Formatierung, Clippy und die Python-Tests laufen einmal im
+separaten Linux-Job; dort wird auch der Benchmark ohne Desktop-Features geprüft.
+Abhängigkeiten werden pro Job/Plattform zwischengespeichert, auch bei einem
+fehlgeschlagenen Lauf. Der erste Build mit einem neuen Profil benötigt einen
+neuen Cache.
+
+Die Matrix trennt das Kompilieren der Tests von ihrer Ausführung, damit die
+Laufzeit beider Schritte erkennbar ist. Für Kompilierung und Testausführung
+gelten Grenzen von 30 bzw. 10 Minuten; der gesamte Matrix-Job ist auf 45 Minuten
+begrenzt. Neue Läufe derselben Git-Referenz brechen ältere Läufe ab.
+
 ## Gemeinfreies Regressionsbeispiel
 
 Die [Partita BWV 1013](../examples/public-domain/README.md) ist zugleich ein

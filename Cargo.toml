@@ -41,3 +41,19 @@ tiny-skia = { version = "0.11.4", optional = true, default-features = false, fea
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSImage"] }
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData"] }
+
+# Image matching is expensive without optimization, including in dependencies.
+# Keep the development checks while using optimized code for CI tests/builds.
+[profile.ci]
+inherits = "dev"
+opt-level = 2
+debug = 1
+debug-assertions = true
+overflow-checks = true
+incremental = false
+
+# Use release-style checks in third-party numeric/image kernels; keep the
+# assertions and overflow checks above for libreOMR and its tests.
+[profile.ci.package."*"]
+debug-assertions = false
+overflow-checks = false

@@ -9584,6 +9584,8 @@ mod tests {
                 context.run(
                     egui::RawInput {
                         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                        // Simulate a renderer that supports this 5318x6908 scan.
+                        max_texture_side: Some(8192),
                         events,
                         ..Default::default()
                     },
