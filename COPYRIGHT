@@ -1,0 +1,15 @@
+libreOMR
+Copyright (C) 2026 libreOMR contributors
+
+The original libreOMR source code and project documentation are licensed under
+the GNU General Public License, version 3 or (at your option) any later version.
+See LICENSE for the full license text.
+
+libreOMR is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+Third-party code, fonts and example scores retain their respective licenses
+and notices. In particular, Bravura is under the SIL Open Font License 1.1;
+the included Bach example is identified as Public Domain by the Mutopia Project.
+Release packages include THIRD_PARTY_NOTICES.md and the collected license files.
