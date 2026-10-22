@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -38,7 +38,7 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Headless benchmark check
         run: cargo check --locked --no-default-features --bin omr-benchmark
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
       - name: Python tests
@@ -52,7 +52,7 @@ jobs:
         os: [ubuntu-22.04, windows-latest, windows-11-arm, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.os == 'windows-11-arm' && 'stable-aarch64-pc-windows-msvc' || 'stable' }}
@@ -71,7 +71,7 @@ jobs:
         run: cargo test --profile ci --locked
       - name: Build binaries
         run: cargo build --profile ci --locked
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: github.ref_type != 'tag'
         with:
           python-version: '3.x'
@@ -80,7 +80,7 @@ jobs:
         run: python scripts/package_release.py --profile ci
       - name: Upload development build
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libreomr-dev-${{ matrix.os }}-${{ github.sha }}
           path: |

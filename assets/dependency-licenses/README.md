@@ -8,6 +8,8 @@ bestimmte Paketversion.
 `sources.json` dokumentiert für jede Datei die Quelle und SHA-256-Prüfsumme.
 Git-Quellen verweisen auf feste Commits aus den Cargo-VCS-Metadaten oder den
 zugehörigen Versionstags. Die Dateien werden unverändert übernommen.
+`.gitattributes` verhindert für diesen Ordner die automatische Konvertierung
+der Zeilenenden, damit die Prüfsummen auch beim Windows-Checkout erhalten bleiben.
 
 Die älteren Pakete `block`, `dispatch` und `malloc_buf` deklarieren MIT in
 ihrem Manifest, liefern aber keinen separaten Lizenztext. Für sie sind die

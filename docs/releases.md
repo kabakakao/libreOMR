@@ -29,9 +29,12 @@ Das macOS-Bundle ist nicht signiert oder notarisiert.
 1. Version in `Cargo.toml` setzen, z. B. `0.1.0` oder `0.1.0-beta.1`.
 2. Mit `cargo check --locked` prüfen. Nach einer Versionsänderung zunächst
    `cargo check` ausführen, damit `Cargo.lock` die neue Projektversion erhält.
-3. Änderungen einschließlich `Cargo.lock` committen und nach `main` pushen.
+3. Versionshinweise unter `docs/release-notes/<Version>.md` vorbereiten,
+   z. B. `docs/release-notes/0.1.0.md`. Der Workflow prüft, dass die Datei
+   vorhanden und nicht leer ist, und übernimmt sie in den Release-Entwurf.
+4. Änderungen einschließlich `Cargo.lock` und Versionshinweisen committen und nach `main` pushen.
    Den erfolgreichen regulären CI-Lauf abwarten.
-4. Den gewünschten Commit mit exakt passender Version markieren und pushen:
+5. Den gewünschten Commit mit exakt passender Version markieren und pushen:
 
 ```sh
 git tag -a v0.1.0 -m "libreOMR 0.1.0"
@@ -52,7 +55,7 @@ Dieses Archiv gehört zu den Binärpaketen des GPL-Releases. Private und
 ignorierte Dateien werden nicht aus dem Arbeitsverzeichnis übernommen.
 
 Nach erfolgreichen Builds erstellt der Workflow einen **GitHub-Release-Entwurf**
-mit generierten Versionshinweisen, den fünf Archiven und `SHA256SUMS`.
+mit den vorbereiteten Versionshinweisen, den fünf Archiven und `SHA256SUMS`.
 Tags mit einem Bindestrich werden als Vorabversion markiert. Schreibrechte
 auf Repository-Inhalte besitzt nur der letzte Job zum Anlegen des Entwurfs.
 Für die übrigen Jobs reichen Leserechte; ein persönlicher Token ist nicht nötig.

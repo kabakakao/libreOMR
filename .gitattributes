@@ -2,6 +2,9 @@
 * text=auto
 *.sh text eol=lf
 
+# Pinned upstream files must retain their exact bytes for SHA-256 verification.
+assets/dependency-licenses/** -text
+
 # Even the synthetic PDF has byte offsets that line-ending conversion would break.
 *.pdf binary
 *.png binary

@@ -1,7 +1,7 @@
 [package]
 name = "libreomr"
 version = "0.1.0"
-default-run = "libreOMR"
+default-run = "libreomr"
 edition = "2024"
 rust-version = "1.92"
 description = "Interactive, cross-platform optical music recognition prototype"
@@ -15,7 +15,7 @@ desktop = ["dep:eframe", "dep:egui-phosphor", "dep:rfd", "dep:tiny-skia", "dep:o
 ui-screenshot = ["desktop", "eframe/__screenshot"]
 
 [[bin]]
-name = "libreOMR"
+name = "libreomr"
 path = "src/main.rs"
 required-features = ["desktop"]
 

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -13,6 +14,13 @@ import package_release as packaging
 
 
 class PackagingTests(unittest.TestCase):
+    def test_manifest_binary_names_match_packaging_contract(self):
+        package = packaging.project_package(packaging.metadata())
+        binaries = {target["name"] for target in package["targets"] if "bin" in target["kind"]}
+        self.assertIn("libreomr", binaries)
+        self.assertIn("omr-benchmark", binaries)
+        self.assertEqual(package["default_run"], "libreomr")
+
     def fixture(self, parent):
         root = parent / "project"
         root.mkdir()
@@ -126,6 +134,29 @@ class PackagingTests(unittest.TestCase):
             stage.mkdir()
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 packaging.copy_notices(root, stage, data)
+
+    def test_pinned_upstream_notices_survive_windows_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root = parent / "repository"
+            root.mkdir()
+            shutil.copy2(packaging.ROOT / ".gitattributes", root / ".gitattributes")
+            shutil.copytree(packaging.ROOT / "assets/dependency-licenses", root / "assets/dependency-licenses")
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            subprocess.run(["git", "-c", "core.autocrlf=false", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.name=Packaging test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture"], cwd=root, check=True)
+            checkout = parent / "checkout"
+            subprocess.run([
+                "git", "clone", "--quiet", "--no-local",
+                "--config", "core.autocrlf=true", "--config", "core.eol=crlf",
+                str(root), str(checkout),
+            ], check=True)
+            supplemental = checkout / "assets/dependency-licenses"
+            sources = json.loads((supplemental / "sources.json").read_text(encoding="utf-8"))
+            for package, entries in sources.items():
+                for entry in entries:
+                    source = supplemental / package / entry["path"]
+                    self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), entry["sha256"], str(source))
 
     def test_source_archive_contains_committed_files_and_relative_vendor_config(self):
         with tempfile.TemporaryDirectory() as temporary:
