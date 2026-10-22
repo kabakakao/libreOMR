@@ -47,6 +47,34 @@ Die dargestellten Vorschläge sind kein fertig korrigiertes Notenergebnis.
 
 ## Installation und Start
 
+### Fertige Pakete
+
+Veröffentlichte Versionen stehen unter
+[GitHub Releases](https://github.com/kabakakao/libreOMR/releases) bereit:
+
+| Plattform | Paket |
+| --- | --- |
+| Windows x86_64 | ZIP mit `libreomr.exe` |
+| Windows ARM64 | ZIP mit nativer ARM64-Version von `libreomr.exe` |
+| Linux x86_64 | TAR.GZ mit `libreomr` |
+| macOS Apple Silicon | ZIP mit `libreOMR.app` |
+
+Das passende Archiv vollständig entpacken und das Programm starten. Unter
+macOS kann `libreOMR.app` in den Programme-Ordner kopiert werden. Die App ist
+noch nicht signiert oder notarisiert; macOS kann deshalb die Freigabe unter
+**Systemeinstellungen > Datenschutz & Sicherheit** verlangen. Intel-Macs
+werden nicht unterstützt.
+
+Unter Linux wird eine grafische X11- oder Wayland-Sitzung mit den
+Systembibliotheken für XKB, Wayland und EGL benötigt. Der Dateidialog verwendet
+`xdg-desktop-portal` mit dem zur Desktop-Umgebung passenden Portal-Backend.
+
+Jedes Release enthält das öffentliche Bach-Beispiel, Lizenzhinweise und
+SHA-256-Prüfsummen. Solange noch kein Release veröffentlicht ist, lässt sich
+libreOMR aus dem Quellcode bauen.
+
+### Aus dem Quellcode bauen
+
 Zum Bauen wird eine [Rust-Toolchain](https://rustup.rs/) ab Version **1.92**
 benötigt. Die folgenden Befehle im Projektordner ausführen.
 
@@ -57,10 +85,6 @@ lassen sich die benötigten Systempakete so installieren:
 ```sh
 sudo apt-get install build-essential pkg-config libxkbcommon-dev libwayland-dev libegl1-mesa-dev
 ```
-
-Unter Linux wird eine grafische X11- oder Wayland-Sitzung benötigt. Der
-Dateidialog verwendet `xdg-desktop-portal` mit dem zur Desktop-Umgebung
-passenden Portal-Backend.
 
 Anwendung bauen und starten:
 
@@ -84,7 +108,7 @@ sh scripts/build-macos-app.sh
 open target/release/libreOMR.app
 ```
 
-Das lokale Bundle ist nicht signiert oder notarisiert.
+Das Skript setzt einen Mac mit Apple Silicon voraus.
 
 ## Nutzung
 
@@ -181,3 +205,13 @@ automatische Instrumentenzuordnung und Transposition sind noch nicht enthalten.
 Die Vorschau zeigt den bearbeiteten Erkennungsstand; Balkengruppen und
 Seitenlayout werden nicht originalgetreu rekonstruiert. Eine fehlerfreie
 Transkription beliebiger Partituren wird derzeit nicht erreicht.
+
+## Lizenz
+
+libreOMR steht unter der **GNU General Public License v3.0 oder später**
+(`GPL-3.0-or-later`); der vollständige Text steht in [LICENSE](LICENSE).
+Bei Weitergabe geänderter Versionen gelten ebenfalls die Bedingungen der GPL.
+
+Mitgelieferte Komponenten behalten ihre eigenen Lizenzen. Die Bravura-Schrift
+steht unter der [SIL Open Font License 1.1](assets/Bravura-LICENSE.txt), das
+[Bach-Beispiel](examples/public-domain/README.md) ist gemeinfrei.

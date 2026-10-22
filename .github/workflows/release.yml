@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Validate release version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Check tag against Cargo.toml
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/package_release.py --check-tag "$RELEASE_TAG"
+
+  checks:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Package (${{ matrix.os }})
+    needs: checks
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, windows-11-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.os == 'windows-11-arm' && 'stable-aarch64-pc-windows-msvc' || 'stable' }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+          cache-on-failure: true
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - name: Build release binaries
+        run: cargo build --release --locked
+      - name: Package tagged release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/package_release.py --profile release --release-tag "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  source:
+    name: Package corresponding source
+    needs: checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-source
+          cache-targets: false
+      - name: Package source and locked dependencies
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/package_release.py --source-tag "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-source
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    name: Create release draft
+    needs: [build, source]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Combine checksums
+        run: cat dist/*.sha256 > dist/SHA256SUMS
+      - name: Create draft with all packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          args=(--draft --verify-tag --generate-notes --title "libreOMR $RELEASE_TAG")
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${args[@]}" dist/*.zip dist/*.tar.gz dist/SHA256SUMS

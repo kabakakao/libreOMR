@@ -3,6 +3,8 @@
 Diese Dokumentation enthält Architektur, Erkennungsgrenzen und lokale
 Regressionstests. Alle Shell-Beispiele werden im Projekt-Hauptordner ausgeführt.
 Die Anleitung zur Nutzung steht in der [README](../README.md).
+Artefakte, Versionierung und der Ablauf zum Veröffentlichen stehen unter
+[Builds und Releases](releases.md).
 
 ## CI-Laufzeiten
 
@@ -18,8 +20,8 @@ cargo test --profile ci --locked
 cargo build --profile ci --locked
 ```
 
-Alle Rust-Tests und Binärdateien werden weiterhin auf Linux, Windows und
-macOS geprüft. Formatierung, Clippy und die Python-Tests laufen einmal im
+Alle Rust-Tests und Binärdateien werden weiterhin auf Linux, Windows (x86_64 und ARM64) und
+macOS mit Apple Silicon geprüft. Formatierung, Clippy und die Python-Tests laufen einmal im
 separaten Linux-Job; dort wird auch der Benchmark ohne Desktop-Features geprüft.
 Abhängigkeiten werden pro Job/Plattform zwischengespeichert, auch bei einem
 fehlgeschlagenen Lauf. Der erste Build mit einem neuen Profil benötigt einen
@@ -29,6 +31,9 @@ Die Matrix trennt das Kompilieren der Tests von ihrer Ausführung, damit die
 Laufzeit beider Schritte erkennbar ist. Für Kompilierung und Testausführung
 gelten Grenzen von 30 bzw. 10 Minuten; der gesamte Matrix-Job ist auf 45 Minuten
 begrenzt. Neue Läufe derselben Git-Referenz brechen ältere Läufe ab.
+Nach erfolgreichen regulären Builds werden Entwicklungsartefakte für 14 Tage
+hochgeladen. Release-Tags verwenden die CI als wiederverwendbaren Workflow;
+deren Veröffentlichung ist im separaten Release-Workflow vorbereitet.
 
 ## Gemeinfreies Regressionsbeispiel
 

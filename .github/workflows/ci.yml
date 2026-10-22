@@ -2,13 +2,15 @@ name: Build and Test
 
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -47,11 +49,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, windows-11-arm, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.os == 'windows-11-arm' && 'stable-aarch64-pc-windows-msvc' || 'stable' }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: optimized-tests
@@ -67,3 +71,21 @@ jobs:
         run: cargo test --profile ci --locked
       - name: Build binaries
         run: cargo build --profile ci --locked
+      - uses: actions/setup-python@v5
+        if: github.ref_type != 'tag'
+        with:
+          python-version: '3.x'
+      - name: Package development build
+        if: github.ref_type != 'tag'
+        run: python scripts/package_release.py --profile ci
+      - name: Upload development build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: libreomr-dev-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
