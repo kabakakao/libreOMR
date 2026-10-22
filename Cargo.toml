@@ -1,0 +1,43 @@
+[package]
+name = "libreomr"
+version = "0.1.0"
+default-run = "libreomr"
+edition = "2024"
+rust-version = "1.92"
+description = "Interactive, cross-platform optical music recognition prototype"
+exclude = ["/local/**", "/dist/**"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:eframe", "dep:egui-phosphor", "dep:rfd", "dep:tiny-skia", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+ui-screenshot = ["desktop", "eframe/__screenshot"]
+
+[[bin]]
+name = "libreomr"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "omr-benchmark"
+path = "src/bin/omr-benchmark.rs"
+
+[dependencies]
+ab_glyph = "0.2"
+eframe = { version = "0.33", optional = true }
+egui-phosphor = { version = "0.11", optional = true }
+hayro = "0.7.1"
+hayro-ccitt = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp"] }
+imageproc = { version = "0.25", default-features = false }
+quick-xml = "0.38"
+rfd = { version = "0.15", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tiff = "0.11"
+tiny-skia = { version = "0.11.4", optional = true, default-features = false, features = ["std", "simd"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSImage"] }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData"] }

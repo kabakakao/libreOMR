@@ -1,0 +1,847 @@
+{
+  "date": "2026-10-19",
+  "scope": "Same frozen manifests, adapters, supported samples, and evaluator settings. Classifier changes frozen before final control-set evaluation.",
+  "source_sha256": {
+    "src/recognition.rs": "63185a72f310eb06938c6eddfe65b7a59034ba04d4f764fd71182827b3c9ad03",
+    "src/symbols.rs": "9a76e74fa217d55517247812f747086d93ff9be7fb76954c912b4dddf81291b6"
+  },
+  "comparisons": {
+    "primus.dev": {
+      "manifest_fingerprint": "e062a29975309d30",
+      "before_report": "target/omr-benchmarks/primus-baseline/report.json",
+      "after_report": "target/omr-benchmarks/primus-optimized-dev/report.json",
+      "before_report_sha256": "0222bac6f8fa5434bfce7bc6b91190787e8ba447cbe6403a7e8004b63db9a0e4",
+      "after_report_sha256": "192f77ed9a857049cdbed76e9046189ac88bdfd6a0fcec10d85a4f89ff7a617e",
+      "before": {
+        "coverage": {
+          "selected": 391,
+          "evaluated": 159,
+          "unsupported": 232,
+          "failed": 0
+        },
+        "micro_class_f1": 0.9748271814268945,
+        "symbol_error_rate": 0.21985602879424115,
+        "metrics": {
+          "classes": {
+            "barline": {
+              "correct": 563,
+              "extra": 5,
+              "missing": 2
+            },
+            "clef.bass": {
+              "correct": 12,
+              "extra": 0,
+              "missing": 0
+            },
+            "clef.treble": {
+              "correct": 147,
+              "extra": 0,
+              "missing": 0
+            },
+            "key": {
+              "correct": 122,
+              "extra": 0,
+              "missing": 37
+            },
+            "note": {
+              "correct": 2625,
+              "extra": 114,
+              "missing": 8
+            },
+            "rest": {
+              "correct": 133,
+              "extra": 0,
+              "missing": 3
+            },
+            "time": {
+              "correct": 135,
+              "extra": 0,
+              "missing": 24
+            }
+          },
+          "properties": {
+            "key.fifths": {
+              "correct": 67,
+              "extra": 55,
+              "missing": 92
+            },
+            "note.accidental": {
+              "correct": 2418,
+              "extra": 319,
+              "missing": 215
+            },
+            "note.dots": {
+              "correct": 2608,
+              "extra": 129,
+              "missing": 25
+            },
+            "note.duration": {
+              "correct": 2248,
+              "extra": 489,
+              "missing": 385
+            },
+            "note.pitch": {
+              "correct": 2585,
+              "extra": 152,
+              "missing": 48
+            },
+            "note.triplet": {
+              "correct": 2562,
+              "extra": 175,
+              "missing": 71
+            },
+            "rest.duration": {
+              "correct": 130,
+              "extra": 3,
+              "missing": 6
+            },
+            "time.meter": {
+              "correct": 128,
+              "extra": 7,
+              "missing": 31
+            }
+          },
+          "reference_events": 3334,
+          "edit_errors": 733,
+          "sequence_samples": 159,
+          "exact_sequences": 23
+        }
+      },
+      "after": {
+        "coverage": {
+          "selected": 391,
+          "evaluated": 159,
+          "unsupported": 232,
+          "failed": 0
+        },
+        "micro_class_f1": 0.9862403354737256,
+        "symbol_error_rate": 0.06958608278344332,
+        "metrics": {
+          "classes": {
+            "barline": {
+              "correct": 564,
+              "extra": 4,
+              "missing": 1
+            },
+            "clef.bass": {
+              "correct": 12,
+              "extra": 0,
+              "missing": 0
+            },
+            "clef.treble": {
+              "correct": 147,
+              "extra": 0,
+              "missing": 0
+            },
+            "key": {
+              "correct": 146,
+              "extra": 0,
+              "missing": 13
+            },
+            "note": {
+              "correct": 2626,
+              "extra": 53,
+              "missing": 7
+            },
+            "rest": {
+              "correct": 133,
+              "extra": 0,
+              "missing": 3
+            },
+            "time": {
+              "correct": 135,
+              "extra": 0,
+              "missing": 24
+            }
+          },
+          "properties": {
+            "key.fifths": {
+              "correct": 145,
+              "extra": 1,
+              "missing": 14
+            },
+            "note.accidental": {
+              "correct": 2593,
+              "extra": 85,
+              "missing": 40
+            },
+            "note.dots": {
+              "correct": 2616,
+              "extra": 62,
+              "missing": 17
+            },
+            "note.duration": {
+              "correct": 2522,
+              "extra": 156,
+              "missing": 111
+            },
+            "note.pitch": {
+              "correct": 2605,
+              "extra": 73,
+              "missing": 28
+            },
+            "note.triplet": {
+              "correct": 2602,
+              "extra": 76,
+              "missing": 31
+            },
+            "rest.duration": {
+              "correct": 130,
+              "extra": 3,
+              "missing": 6
+            },
+            "time.meter": {
+              "correct": 128,
+              "extra": 7,
+              "missing": 31
+            }
+          },
+          "reference_events": 3334,
+          "edit_errors": 232,
+          "sequence_samples": 159,
+          "exact_sequences": 87
+        }
+      },
+      "reported_regressions": []
+    },
+    "primus.test": {
+      "manifest_fingerprint": "e062a29975309d30",
+      "before_report": "target/omr-benchmarks/primus-control-before/report.json",
+      "after_report": "target/omr-benchmarks/primus-optimized-test/report.json",
+      "before_report_sha256": "d5b5d069b1900802826d62bb09d86104ec52814ee89e34942f719b51bc7e5115",
+      "after_report_sha256": "5342201e17eec81d046f712fa42bc4b4be088fdb6252b0d27c12f462293b0404",
+      "before": {
+        "coverage": {
+          "selected": 109,
+          "evaluated": 41,
+          "unsupported": 68,
+          "failed": 0
+        },
+        "micro_class_f1": 0.9774590163934426,
+        "symbol_error_rate": 0.1967020023557126,
+        "metrics": {
+          "classes": {
+            "barline": {
+              "correct": 143,
+              "extra": 0,
+              "missing": 0
+            },
+            "clef.bass": {
+              "correct": 6,
+              "extra": 0,
+              "missing": 0
+            },
+            "clef.treble": {
+              "correct": 35,
+              "extra": 0,
+              "missing": 0
+            },
+            "key": {
+              "correct": 31,
+              "extra": 0,
+              "missing": 10
+            },
+            "note": {
+              "correct": 675,
+              "extra": 26,
+              "missing": 1
+            },
+            "rest": {
+              "correct": 27,
+              "extra": 0,
+              "missing": 3
+            },
+            "time": {
+              "correct": 37,
+              "extra": 0,
+              "missing": 4
+            }
+          },
+          "properties": {
+            "key.fifths": {
+              "correct": 20,
+              "extra": 11,
+              "missing": 21
+            },
+            "note.accidental": {
+              "correct": 644,
+              "extra": 57,
+              "missing": 32
+            },
+            "note.dots": {
+              "correct": 673,
+              "extra": 28,
+              "missing": 3
+            },
+            "note.duration": {
+              "correct": 559,
+              "extra": 142,
+              "missing": 117
+            },
+            "note.pitch": {
+              "correct": 660,
+              "extra": 41,
+              "missing": 16
+            },
+            "note.triplet": {
+              "correct": 672,
+              "extra": 29,
+              "missing": 4
+            },
+            "rest.duration": {
+              "correct": 26,
+              "extra": 1,
+              "missing": 4
+            },
+            "time.meter": {
+              "correct": 36,
+              "extra": 1,
+              "missing": 5
+            }
+          },
+          "reference_events": 849,
+          "edit_errors": 167,
+          "sequence_samples": 41,
+          "exact_sequences": 5
+        }
+      },
+      "after": {
+        "coverage": {
+          "selected": 109,
+          "evaluated": 41,
+          "unsupported": 68,
+          "failed": 0
+        },
+        "micro_class_f1": 0.9881869542886492,
+        "symbol_error_rate": 0.071849234393404,
+        "metrics": {
+          "classes": {
+            "barline": {
+              "correct": 143,
+              "extra": 0,
+              "missing": 0
+            },
+            "clef.bass": {
+              "correct": 6,
+              "extra": 0,
+              "missing": 0
+            },
+            "clef.treble": {
+              "correct": 35,
+              "extra": 0,
+              "missing": 0
+            },
+            "key": {
+              "correct": 39,
+              "extra": 0,
+              "missing": 2
+            },
+            "note": {
+              "correct": 675,
+              "extra": 13,
+              "missing": 1
+            },
+            "rest": {
+              "correct": 27,
+              "extra": 0,
+              "missing": 3
+            },
+            "time": {
+              "correct": 37,
+              "extra": 0,
+              "missing": 4
+            }
+          },
+          "properties": {
+            "key.fifths": {
+              "correct": 39,
+              "extra": 0,
+              "missing": 2
+            },
+            "note.accidental": {
+              "correct": 663,
+              "extra": 25,
+              "missing": 13
+            },
+            "note.dots": {
+              "correct": 673,
+              "extra": 15,
+              "missing": 3
+            },
+            "note.duration": {
+              "correct": 639,
+              "extra": 49,
+              "missing": 37
+            },
+            "note.pitch": {
+              "correct": 663,
+              "extra": 25,
+              "missing": 13
+            },
+            "note.triplet": {
+              "correct": 672,
+              "extra": 16,
+              "missing": 4
+            },
+            "rest.duration": {
+              "correct": 26,
+              "extra": 1,
+              "missing": 4
+            },
+            "time.meter": {
+              "correct": 36,
+              "extra": 1,
+              "missing": 5
+            }
+          },
+          "reference_events": 849,
+          "edit_errors": 61,
+          "sequence_samples": 41,
+          "exact_sequences": 25
+        }
+      },
+      "reported_regressions": []
+    },
+    "doremi.dev": {
+      "manifest_fingerprint": "67e83bb6a825fda0",
+      "before_report": "target/omr-benchmarks/doremi-baseline/report.json",
+      "after_report": "target/omr-benchmarks/doremi-optimized-dev/report.json",
+      "before_report_sha256": "255b99cef293a0421dff0678fab0a3c47ca066fcef469459bfdd539472ea8fd4",
+      "after_report_sha256": "72a2bd4688ba9419d7deffd23e92b611b35268820d700324144d8107a14490fb",
+      "before": {
+        "coverage": {
+          "selected": 30,
+          "evaluated": 30,
+          "unsupported": 0,
+          "failed": 0
+        },
+        "micro_class_f1": 0.8847019122609674,
+        "symbol_error_rate": null,
+        "metrics": {
+          "classes": {
+            "clef.bass": {
+              "correct": 17,
+              "extra": 0,
+              "missing": 2
+            },
+            "clef.treble": {
+              "correct": 22,
+              "extra": 0,
+              "missing": 30
+            },
+            "dynamic.f": {
+              "correct": 1,
+              "extra": 0,
+              "missing": 0
+            },
+            "dynamic.ff": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 0
+            },
+            "dynamic.p": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 0
+            },
+            "dynamic.pp": {
+              "correct": 5,
+              "extra": 0,
+              "missing": 1
+            },
+            "dynamic.sfz": {
+              "correct": 5,
+              "extra": 0,
+              "missing": 0
+            },
+            "note.black": {
+              "correct": 1382,
+              "extra": 22,
+              "missing": 237
+            },
+            "note.half": {
+              "correct": 42,
+              "extra": 98,
+              "missing": 0
+            },
+            "note.whole": {
+              "correct": 7,
+              "extra": 5,
+              "missing": 0
+            },
+            "rest.eighth": {
+              "correct": 49,
+              "extra": 0,
+              "missing": 7
+            },
+            "rest.half": {
+              "correct": 1,
+              "extra": 0,
+              "missing": 0
+            },
+            "rest.quarter": {
+              "correct": 17,
+              "extra": 0,
+              "missing": 6
+            },
+            "rest.sixteenth": {
+              "correct": 12,
+              "extra": 0,
+              "missing": 2
+            },
+            "rest.thirty_second": {
+              "correct": 4,
+              "extra": 0,
+              "missing": 0
+            },
+            "rest.whole": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 0
+            }
+          },
+          "properties": {
+            "note.accidental": {
+              "correct": 1316,
+              "extra": 205,
+              "missing": 317
+            },
+            "note.duration_ticks": {
+              "correct": 902,
+              "extra": 619,
+              "missing": 731
+            },
+            "note.pitch": {
+              "correct": 1161,
+              "extra": 360,
+              "missing": 472
+            }
+          },
+          "reference_events": 0,
+          "edit_errors": 0,
+          "sequence_samples": 0,
+          "exact_sequences": 0
+        }
+      },
+      "after": {
+        "coverage": {
+          "selected": 30,
+          "evaluated": 30,
+          "unsupported": 0,
+          "failed": 0
+        },
+        "micro_class_f1": 0.8844531908912004,
+        "symbol_error_rate": null,
+        "metrics": {
+          "classes": {
+            "clef.bass": {
+              "correct": 17,
+              "extra": 0,
+              "missing": 2
+            },
+            "clef.treble": {
+              "correct": 22,
+              "extra": 0,
+              "missing": 30
+            },
+            "dynamic.f": {
+              "correct": 1,
+              "extra": 0,
+              "missing": 0
+            },
+            "dynamic.ff": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 0
+            },
+            "dynamic.p": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 0
+            },
+            "dynamic.pp": {
+              "correct": 5,
+              "extra": 0,
+              "missing": 1
+            },
+            "dynamic.sfz": {
+              "correct": 5,
+              "extra": 0,
+              "missing": 0
+            },
+            "note.black": {
+              "correct": 1382,
+              "extra": 22,
+              "missing": 237
+            },
+            "note.half": {
+              "correct": 42,
+              "extra": 99,
+              "missing": 0
+            },
+            "note.whole": {
+              "correct": 7,
+              "extra": 5,
+              "missing": 0
+            },
+            "rest.eighth": {
+              "correct": 49,
+              "extra": 0,
+              "missing": 7
+            },
+            "rest.half": {
+              "correct": 1,
+              "extra": 0,
+              "missing": 0
+            },
+            "rest.quarter": {
+              "correct": 17,
+              "extra": 0,
+              "missing": 6
+            },
+            "rest.sixteenth": {
+              "correct": 12,
+              "extra": 0,
+              "missing": 2
+            },
+            "rest.thirty_second": {
+              "correct": 4,
+              "extra": 0,
+              "missing": 0
+            },
+            "rest.whole": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 0
+            }
+          },
+          "properties": {
+            "note.accidental": {
+              "correct": 1315,
+              "extra": 207,
+              "missing": 318
+            },
+            "note.duration_ticks": {
+              "correct": 1065,
+              "extra": 457,
+              "missing": 568
+            },
+            "note.pitch": {
+              "correct": 1161,
+              "extra": 361,
+              "missing": 472
+            }
+          },
+          "reference_events": 0,
+          "edit_errors": 0,
+          "sequence_samples": 0,
+          "exact_sequences": 0
+        }
+      },
+      "reported_regressions": [
+        "All classes: F1 88.47% -> 88.45%",
+        "class note.half: F1 46.15% -> 45.90%",
+        "property note.accidental: F1 83.45% -> 83.36%",
+        "property note.pitch: F1 73.62% -> 73.60%"
+      ]
+    },
+    "doremi.test": {
+      "manifest_fingerprint": "67e83bb6a825fda0",
+      "before_report": "target/omr-benchmarks/doremi-control-before/report.json",
+      "after_report": "target/omr-benchmarks/doremi-optimized-test/report.json",
+      "before_report_sha256": "a54dddf815fc4cfb8b29aed4666122fe002dd58b489db723ea738e2d059dfb9f",
+      "after_report_sha256": "5275c96c10d3c9c09f71b81d2a76367c39436b43cabac8cf6fc02e2e80663268",
+      "before": {
+        "coverage": {
+          "selected": 10,
+          "evaluated": 10,
+          "unsupported": 0,
+          "failed": 0
+        },
+        "micro_class_f1": 0.9333333333333333,
+        "symbol_error_rate": null,
+        "metrics": {
+          "classes": {
+            "clef.bass": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 2
+            },
+            "clef.treble": {
+              "correct": 6,
+              "extra": 0,
+              "missing": 7
+            },
+            "dynamic.f": {
+              "correct": 2,
+              "extra": 0,
+              "missing": 0
+            },
+            "dynamic.p": {
+              "correct": 1,
+              "extra": 0,
+              "missing": 1
+            },
+            "note.black": {
+              "correct": 382,
+              "extra": 0,
+              "missing": 21
+            },
+            "note.half": {
+              "correct": 15,
+              "extra": 23,
+              "missing": 1
+            },
+            "note.whole": {
+              "correct": 0,
+              "extra": 1,
+              "missing": 0
+            },
+            "rest.eighth": {
+              "correct": 4,
+              "extra": 0,
+              "missing": 0
+            },
+            "rest.half": {
+              "correct": 1,
+              "extra": 1,
+              "missing": 0
+            },
+            "rest.quarter": {
+              "correct": 1,
+              "extra": 0,
+              "missing": 0
+            },
+            "rest.sixteenth": {
+              "correct": 37,
+              "extra": 0,
+              "missing": 8
+            },
+            "rest.whole": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 0
+            }
+          },
+          "properties": {
+            "note.accidental": {
+              "correct": 386,
+              "extra": 35,
+              "missing": 33
+            },
+            "note.duration_ticks": {
+              "correct": 256,
+              "extra": 165,
+              "missing": 163
+            },
+            "note.pitch": {
+              "correct": 303,
+              "extra": 118,
+              "missing": 116
+            }
+          },
+          "reference_events": 0,
+          "edit_errors": 0,
+          "sequence_samples": 0,
+          "exact_sequences": 0
+        }
+      },
+      "after": {
+        "coverage": {
+          "selected": 10,
+          "evaluated": 10,
+          "unsupported": 0,
+          "failed": 0
+        },
+        "micro_class_f1": 0.937178166838311,
+        "symbol_error_rate": null,
+        "metrics": {
+          "classes": {
+            "clef.bass": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 2
+            },
+            "clef.treble": {
+              "correct": 6,
+              "extra": 0,
+              "missing": 7
+            },
+            "dynamic.f": {
+              "correct": 2,
+              "extra": 0,
+              "missing": 0
+            },
+            "dynamic.p": {
+              "correct": 1,
+              "extra": 0,
+              "missing": 1
+            },
+            "note.black": {
+              "correct": 382,
+              "extra": 0,
+              "missing": 21
+            },
+            "note.half": {
+              "correct": 15,
+              "extra": 19,
+              "missing": 1
+            },
+            "note.whole": {
+              "correct": 0,
+              "extra": 1,
+              "missing": 0
+            },
+            "rest.eighth": {
+              "correct": 4,
+              "extra": 0,
+              "missing": 0
+            },
+            "rest.half": {
+              "correct": 1,
+              "extra": 1,
+              "missing": 0
+            },
+            "rest.quarter": {
+              "correct": 1,
+              "extra": 0,
+              "missing": 0
+            },
+            "rest.sixteenth": {
+              "correct": 37,
+              "extra": 0,
+              "missing": 8
+            },
+            "rest.whole": {
+              "correct": 3,
+              "extra": 0,
+              "missing": 0
+            }
+          },
+          "properties": {
+            "note.accidental": {
+              "correct": 386,
+              "extra": 31,
+              "missing": 33
+            },
+            "note.duration_ticks": {
+              "correct": 300,
+              "extra": 117,
+              "missing": 119
+            },
+            "note.pitch": {
+              "correct": 303,
+              "extra": 114,
+              "missing": 116
+            }
+          },
+          "reference_events": 0,
+          "edit_errors": 0,
+          "sequence_samples": 0,
+          "exact_sequences": 0
+        }
+      },
+      "reported_regressions": []
+    }
+  }
+}

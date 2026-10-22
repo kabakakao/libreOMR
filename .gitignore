@@ -1,0 +1,51 @@
+# Rust build output, downloaded benchmark corpora and generated reports
+/target/
+/dist/
+
+# Private scores, exports and local development material
+/local/
+*.libreomr.json
+
+# Guard against accidentally placing scores/exports in the project root.
+# Intentional assets and synthetic test fixtures live in their own directories.
+/*.pdf
+/*.tif
+/*.tiff
+/*.png
+/*.jpg
+/*.jpeg
+/*.bmp
+/*.musicxml
+/*.mxl
+/*.mid
+/*.midi
+/*.mscz
+/*.mscx
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+/.venv/
+/venv/
+.pytest_cache/
+
+# Local environment and credentials (templates may be committed)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+/.aws/
+
+# Editor, operating system and temporary files
+/.idea/
+/.vscode/
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+*.tmp
+*.log

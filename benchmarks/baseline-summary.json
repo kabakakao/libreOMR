@@ -1,0 +1,260 @@
+{
+  "date": "2026-10-19",
+  "scope": "Development splits only; control splits were not evaluated. F1 values are fractions. This summary is not a --baseline input.",
+  "datasets": {
+    "primus": {
+      "evaluator": "libreomr-benchmark-v1",
+      "source": "https://grfia.dlsi.ua.es/primus/",
+      "manifest_fingerprint": "e062a29975309d30",
+      "split": "dev",
+      "straighten": false,
+      "coverage": {
+        "selected": 391,
+        "evaluated": 159,
+        "unsupported": 232,
+        "failed": 0
+      },
+      "micro_class_f1": 0.9748271814268945,
+      "symbol_error_rate": 0.21985602879424115,
+      "metrics": {
+        "classes": {
+          "barline": {
+            "correct": 563,
+            "extra": 5,
+            "missing": 2
+          },
+          "clef.bass": {
+            "correct": 12,
+            "extra": 0,
+            "missing": 0
+          },
+          "clef.treble": {
+            "correct": 147,
+            "extra": 0,
+            "missing": 0
+          },
+          "key": {
+            "correct": 122,
+            "extra": 0,
+            "missing": 37
+          },
+          "note": {
+            "correct": 2625,
+            "extra": 114,
+            "missing": 8
+          },
+          "rest": {
+            "correct": 133,
+            "extra": 0,
+            "missing": 3
+          },
+          "time": {
+            "correct": 135,
+            "extra": 0,
+            "missing": 24
+          }
+        },
+        "properties": {
+          "key.fifths": {
+            "correct": 67,
+            "extra": 55,
+            "missing": 92
+          },
+          "note.accidental": {
+            "correct": 2418,
+            "extra": 319,
+            "missing": 215
+          },
+          "note.dots": {
+            "correct": 2608,
+            "extra": 129,
+            "missing": 25
+          },
+          "note.duration": {
+            "correct": 2248,
+            "extra": 489,
+            "missing": 385
+          },
+          "note.pitch": {
+            "correct": 2585,
+            "extra": 152,
+            "missing": 48
+          },
+          "note.triplet": {
+            "correct": 2562,
+            "extra": 175,
+            "missing": 71
+          },
+          "rest.duration": {
+            "correct": 130,
+            "extra": 3,
+            "missing": 6
+          },
+          "time.meter": {
+            "correct": 128,
+            "extra": 7,
+            "missing": 31
+          }
+        },
+        "reference_events": 3334,
+        "edit_errors": 733,
+        "sequence_samples": 159,
+        "exact_sequences": 23
+      },
+      "ignored_classes": {}
+    },
+    "doremi": {
+      "evaluator": "libreomr-benchmark-v1",
+      "source": "https://github.com/steinbergmedia/DoReMi/releases/tag/v1.0",
+      "manifest_fingerprint": "67e83bb6a825fda0",
+      "split": "dev",
+      "straighten": false,
+      "coverage": {
+        "selected": 30,
+        "evaluated": 30,
+        "unsupported": 0,
+        "failed": 0
+      },
+      "micro_class_f1": 0.8847019122609674,
+      "symbol_error_rate": null,
+      "metrics": {
+        "classes": {
+          "clef.bass": {
+            "correct": 17,
+            "extra": 0,
+            "missing": 2
+          },
+          "clef.treble": {
+            "correct": 22,
+            "extra": 0,
+            "missing": 30
+          },
+          "dynamic.f": {
+            "correct": 1,
+            "extra": 0,
+            "missing": 0
+          },
+          "dynamic.ff": {
+            "correct": 3,
+            "extra": 0,
+            "missing": 0
+          },
+          "dynamic.p": {
+            "correct": 3,
+            "extra": 0,
+            "missing": 0
+          },
+          "dynamic.pp": {
+            "correct": 5,
+            "extra": 0,
+            "missing": 1
+          },
+          "dynamic.sfz": {
+            "correct": 5,
+            "extra": 0,
+            "missing": 0
+          },
+          "note.black": {
+            "correct": 1382,
+            "extra": 22,
+            "missing": 237
+          },
+          "note.half": {
+            "correct": 42,
+            "extra": 98,
+            "missing": 0
+          },
+          "note.whole": {
+            "correct": 7,
+            "extra": 5,
+            "missing": 0
+          },
+          "rest.eighth": {
+            "correct": 49,
+            "extra": 0,
+            "missing": 7
+          },
+          "rest.half": {
+            "correct": 1,
+            "extra": 0,
+            "missing": 0
+          },
+          "rest.quarter": {
+            "correct": 17,
+            "extra": 0,
+            "missing": 6
+          },
+          "rest.sixteenth": {
+            "correct": 12,
+            "extra": 0,
+            "missing": 2
+          },
+          "rest.thirty_second": {
+            "correct": 4,
+            "extra": 0,
+            "missing": 0
+          },
+          "rest.whole": {
+            "correct": 3,
+            "extra": 0,
+            "missing": 0
+          }
+        },
+        "properties": {
+          "note.accidental": {
+            "correct": 1316,
+            "extra": 205,
+            "missing": 317
+          },
+          "note.duration_ticks": {
+            "correct": 902,
+            "extra": 619,
+            "missing": 731
+          },
+          "note.pitch": {
+            "correct": 1161,
+            "extra": 360,
+            "missing": 472
+          }
+        },
+        "reference_events": 0,
+        "edit_errors": 0,
+        "sequence_samples": 0,
+        "exact_sequences": 0
+      },
+      "ignored_classes": {
+        "accidentalDoubleSharp": 5,
+        "accidentalFlat": 111,
+        "accidentalNatural": 143,
+        "accidentalSharp": 214,
+        "articAccentAbove": 12,
+        "articAccentBelow": 7,
+        "articStaccatissimoAbove": 22,
+        "articStaccatissimoBelow": 9,
+        "articStaccatoAbove": 16,
+        "articStaccatoBelow": 25,
+        "articTenutoAbove": 20,
+        "articTenutoBelow": 6,
+        "augmentationDot": 7,
+        "barline": 95,
+        "beam": 257,
+        "cClef": 1,
+        "flag16thUp": 13,
+        "flag32ndUp": 1,
+        "flag8thDown": 33,
+        "flag8thUp": 56,
+        "gradualDynamic": 22,
+        "kStaffLine": 335,
+        "slur": 58,
+        "stem": 1196,
+        "systemicBarline": 22,
+        "tie": 78,
+        "timeSig2": 4,
+        "timeSig4": 8,
+        "timeSig6": 4,
+        "tupletBracket": 2,
+        "tupletText": 30
+      }
+    }
+  }
+}

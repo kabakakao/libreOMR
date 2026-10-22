@@ -1,0 +1,8 @@
+# Normalize text; shell scripts always use LF line endings.
+* text=auto
+*.sh text eol=lf
+
+# Even the synthetic PDF has byte offsets that line-ending conversion would break.
+*.pdf binary
+*.png binary
+*.otf binary

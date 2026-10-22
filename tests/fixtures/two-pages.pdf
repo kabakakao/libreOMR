@@ -1,0 +1,40 @@
+%PDF-1.4
+% Synthetic libreOMR import fixture, created for this project.
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 96] /Resources << >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 96 72] /CropBox [12 6 84 66] /Rotate 90 /Resources << >> /Contents 6 0 R >>
+endobj
+5 0 obj
+<< /Length 19 >>
+stream
+0 g 0 0 36 96 re f
+endstream
+endobj
+6 0 obj
+<< /Length 21 >>
+stream
+0.5 g 0 0 96 72 re f
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000072 00000 n 
+0000000121 00000 n 
+0000000184 00000 n 
+0000000286 00000 n 
+0000000421 00000 n 
+0000000489 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+559
+%%EOF
