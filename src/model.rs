@@ -163,6 +163,8 @@ pub struct Rest {
     pub dots: u8,
     #[serde(default)]
     pub measures: Option<u8>,
+    #[serde(default)]
+    pub fermata: bool,
     pub confirmed: bool,
     pub bounds: Option<SymbolBounds>,
 }
@@ -951,6 +953,7 @@ impl Score {
             duration,
             dots: 0,
             measures: None,
+            fermata: false,
             confirmed: true,
             bounds: None,
         });
@@ -1199,6 +1202,18 @@ impl ProjectDocument {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rest_fermatas_default_for_legacy_projects_and_roundtrip() {
+        let mut score: Score = serde_json::from_str(r#"{"staves":[{"lines":[20,30,40,50,60],"left":10,"right":200}],"notes":[],"rests":[{"x":50,"y":40,"staff":0,"duration":"Quarter","confirmed":true,"bounds":null}]}"#).unwrap();
+        assert!(!score.rests[0].fermata);
+        score.rests[0].fermata = true;
+        let restored: Score = serde_json::from_slice(&serde_json::to_vec(&score).unwrap()).unwrap();
+        assert!(restored.validate().is_ok());
+        assert!(restored.rests[0].fermata);
+        let index = score.add_rest(100.0, 40.0, Duration::Whole).unwrap();
+        assert!(!score.rests[index].fermata);
+    }
+
     #[test]
     fn multipage_projects_accept_legacy_files_and_reject_invalid_documents() {
         let legacy = Project {

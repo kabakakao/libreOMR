@@ -1262,6 +1262,11 @@ fn export_ordered(
                                     xml.empty("dot", &[]);
                                 }
                             }
+                            if rest.fermata && repetition == 0 {
+                                xml.start("notations", &[]);
+                                xml.empty("fermata", &[]);
+                                xml.end("notations");
+                            }
                             xml.end("note");
                             elapsed += duration;
                             previous_note = None;
@@ -1382,6 +1387,38 @@ fn export_ordered(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rest_fermatas_export_inside_the_rest_note() {
+        for (duration, measures) in [
+            (Duration::Quarter, None),
+            (Duration::Whole, None),
+            (Duration::Whole, Some(3)),
+        ] {
+            let mut score = score();
+            score.notes.clear();
+            let index = score.add_rest(100.0, 40.0, duration).unwrap();
+            score.rests[index].measures = measures;
+            let plain = export(&score, "Test").unwrap();
+            assert!(!plain.xml.contains("<fermata"));
+            score.rests[index].fermata = true;
+            let before = serde_json::to_value(&score).unwrap();
+            let result = export(&score, "Test").unwrap();
+            assert_xml(&result.xml);
+            assert_eq!(result.xml.matches("<fermata/>").count(), 1);
+            let note = result
+                .xml
+                .split("<note>")
+                .nth(1)
+                .unwrap()
+                .split("</note>")
+                .next()
+                .unwrap();
+            assert!(note.contains("<rest"));
+            assert!(note.contains("<notations><fermata/></notations>"));
+            assert_eq!(serde_json::to_value(&score).unwrap(), before);
+        }
+    }
+
     #[test]
     fn multipage_musicxml_preserves_page_order_staff_order_and_all_object_references() {
         use crate::model::{Dynamic, DynamicKind, RepeatMark, RepeatMarkKind, TimeChange};
@@ -1782,6 +1819,7 @@ mod tests {
                 duration: Duration::Whole,
                 dots: 0,
                 measures: Some(3),
+                fermata: false,
                 bounds: None,
                 confirmed: true,
             }];

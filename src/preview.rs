@@ -220,7 +220,7 @@ fn crisp_line(ui: &egui::Ui, mut from: Pos2, mut to: Pos2, thickness: f32, color
         .line_segment([from, to], Stroke::new(pixels / density, color));
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub(crate) enum Selection {
     Note(usize),
     Rest(usize),
@@ -241,7 +241,7 @@ pub(crate) struct Preview {
 }
 
 pub(crate) struct AnchorEdit {
-    pub index: usize,
+    pub target: Selection,
     pub right: bool,
     pub position: [f32; 2],
     pub started: bool,
@@ -249,7 +249,7 @@ pub(crate) struct AnchorEdit {
 }
 
 struct AnchorDrag {
-    index: usize,
+    target: Selection,
     right: bool,
     source: [f32; 2],
     screen: Pos2,
@@ -800,6 +800,13 @@ impl Preview {
         {
             upper = upper.min(-2.7);
         }
+        for rest in score
+            .rests
+            .iter()
+            .filter(|rest| rest.staff == staff_index && rest.fermata)
+        {
+            upper = upper.min(if rest.measures.is_some() { -4.2 } else { -2.0 });
+        }
         for dynamic in score
             .dynamics
             .iter()
@@ -959,10 +966,17 @@ impl Preview {
         }
         if !fit_object
             && let Some(drag) = &self.anchor_drag
-            && score
-                .spans
-                .get(drag.index)
-                .is_some_and(|span| span.staff == staff_index)
+            && match drag.target {
+                Selection::Span(index) => score
+                    .spans
+                    .get(index)
+                    .is_some_and(|span| span.staff == staff_index),
+                Selection::RepeatMark(index) => score
+                    .repeat_marks
+                    .get(index)
+                    .is_some_and(|mark| mark.staff == staff_index),
+                _ => false,
+            }
         {
             upper = drag.upper;
             lower = drag.lower;
@@ -1453,6 +1467,16 @@ impl Preview {
                                     );
                                 }
                             }
+                            if rest.fermata {
+                                self.glyph(
+                                    ui,
+                                    '\u{e4c0}',
+                                    point(x, if rest.measures.is_some() { -3.0 } else { -0.8 }),
+                                    GAP * 1.2,
+                                    Vec2::new(0.5, 1.0),
+                                    color,
+                                );
+                            }
                             if ui
                                 .interact(
                                     Rect::from_center_size(
@@ -1585,18 +1609,34 @@ impl Preview {
                     }
                 }
                 if !fit_object {
-                    for (index, span) in score
+                    let anchors = score
                         .spans
                         .iter()
                         .enumerate()
                         .filter(|(_, span)| span.staff == staff_index)
-                    {
-                        for (right, source) in [(false, span.start), (true, span.end)] {
+                        .map(|(index, span)| (Selection::Span(index), [span.start, span.end]))
+                        .chain(
+                            score
+                                .repeat_marks
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, mark)| {
+                                    mark.staff == staff_index && mark.kind == RepeatMarkKind::Ending
+                                })
+                                .map(|(index, mark)| {
+                                    (
+                                        Selection::RepeatMark(index),
+                                        [[mark.x, mark.y], [mark.end_x, mark.y]],
+                                    )
+                                }),
+                        );
+                    for (target, points) in anchors {
+                        for (right, source) in [(false, points[0]), (true, points[1])] {
                             let center = point(
                                 map_x(source[0]),
                                 (source[1] - staff.lines[0]) / staff.spacing(),
                             );
-                            let active = selected == Some(Selection::Span(index));
+                            let active = selected == Some(target);
                             let color = if active {
                                 Color32::from_rgb(0, 95, 180)
                             } else {
@@ -1609,7 +1649,7 @@ impl Preview {
                             let response = ui
                                 .interact(
                                     Rect::from_center_size(center, Vec2::splat(20.0)),
-                                    ui.id().with(("span_anchor", index, right)),
+                                    ui.id().with(("object_anchor", target, right)),
                                     Sense::click_and_drag(),
                                 )
                                 .on_hover_cursor(egui::CursorIcon::Grab)
@@ -1619,7 +1659,7 @@ impl Preview {
                                     i18n::tr("Drag start anchor")
                                 });
                             if response.clicked() {
-                                clicked = Some(Selection::Span(index));
+                                clicked = Some(target);
                             }
                             if response.drag_started() {
                                 let mut x_positions = vec![];
@@ -1642,7 +1682,7 @@ impl Preview {
                                     ];
                                 }
                                 self.anchor_drag = Some(AnchorDrag {
-                                    index,
+                                    target,
                                     right,
                                     source,
                                     screen: center,
@@ -1655,18 +1695,18 @@ impl Preview {
                                     natural_width,
                                     scale,
                                 });
-                                clicked = Some(Selection::Span(index));
+                                clicked = Some(target);
                             }
                             if (response.dragged() || response.drag_stopped())
                                 && let Some(drag) = &mut self.anchor_drag
-                                && drag.index == index
+                                && drag.target == target
                                 && drag.right == right
                             {
                                 if response.dragged() {
                                     drag.delta = response.drag_delta();
                                 }
                                 self.anchor_edit = Some(AnchorEdit {
-                                    index,
+                                    target,
                                     right,
                                     position: drag.position(drag.delta),
                                     started: response.drag_started(),
@@ -1971,8 +2011,10 @@ mod tests {
             let mut changed = score.clone();
             changed.rests[0].duration = duration;
             if duration != score.rests[0].duration {
-                variants.push((Selection::Rest(0), changed));
+                variants.push((Selection::Rest(0), changed.clone()));
             }
+            changed.rests[0].fermata = true;
+            variants.push((Selection::Rest(0), changed));
             for dots in [1, 2] {
                 let mut changed = score.clone();
                 changed.rests[0].duration = duration;
@@ -2012,6 +2054,8 @@ mod tests {
         for measures in [2, 99] {
             let mut changed = score.clone();
             changed.rests[0].measures = Some(measures);
+            variants.push((Selection::Rest(0), changed.clone()));
+            changed.rests[0].fermata = true;
             variants.push((Selection::Rest(0), changed));
         }
         for kind in BarlineKind::ALL.into_iter().skip(1) {

@@ -83,6 +83,17 @@ impl EditShortcut {
 enum DragTarget {
     Body(Object),
     Anchor(usize, bool),
+    EndingAnchor(usize, bool),
+}
+
+impl DragTarget {
+    fn object(self) -> Object {
+        match self {
+            Self::Body(object) => object,
+            Self::Anchor(index, _) => Object::Span(index),
+            Self::EndingAnchor(index, _) => Object::RepeatMark(index),
+        }
+    }
 }
 
 struct ObjectDrag {
@@ -1243,6 +1254,22 @@ impl App {
     }
 
     fn hit_object(&self, position: Vec2) -> Option<DragTarget> {
+        if let Some(Object::RepeatMark(index)) = self.page.selected_object
+            && let Some(mark) = self.page.score.repeat_marks.get(index)
+            && mark.kind == RepeatMarkKind::Ending
+            && let Some((right, distance)) = [(false, mark.x), (true, mark.end_x)]
+                .map(|(right, x)| {
+                    (
+                        right,
+                        (Vec2::new(x, mark.y) - position).length() * self.page.zoom,
+                    )
+                })
+                .into_iter()
+                .min_by(|first, second| first.1.total_cmp(&second.1))
+            && distance <= 10.0
+        {
+            return Some(DragTarget::EndingAnchor(index, right));
+        }
         if let Some(Object::Span(index)) = self.page.selected_object
             && let Some(span) = self.page.score.spans.get(index)
         {
@@ -1529,6 +1556,18 @@ impl App {
                 span.start = [original.start[0] + shift_x, original.start[1] + shift_y];
                 span.end = [original.end[0] + shift_x, original.end[1] + shift_y];
                 span.confirmed = true;
+            }
+            DragTarget::EndingAnchor(index, right) => {
+                let original = &drag.score.repeat_marks[index];
+                let staff = &self.page.score.staves[original.staff];
+                let mark = &mut self.page.score.repeat_marks[index];
+                if right {
+                    mark.end_x = (original.end_x + delta.x).clamp(original.x + 1.0, staff.right);
+                } else {
+                    mark.x = (original.x + delta.x).clamp(staff.left, original.end_x - 1.0);
+                }
+                mark.bounds = None;
+                mark.confirmed = true;
             }
             DragTarget::Anchor(index, right) => {
                 let original = &drag.score.spans[index];
@@ -2682,14 +2721,37 @@ impl App {
 
     fn apply_preview_anchor_edit(&mut self, edit: crate::preview::AnchorEdit) {
         if edit.started {
-            let Some(span) = self.page.score.spans.get(edit.index) else {
-                return;
+            let (target, origin) = match edit.target {
+                crate::preview::Selection::Span(index) => {
+                    let Some(span) = self.page.score.spans.get(index) else {
+                        return;
+                    };
+                    (
+                        DragTarget::Anchor(index, edit.right),
+                        Vec2::from(if edit.right { span.end } else { span.start }),
+                    )
+                }
+                crate::preview::Selection::RepeatMark(index) => {
+                    let Some(mark) = self
+                        .page
+                        .score
+                        .repeat_marks
+                        .get(index)
+                        .filter(|mark| mark.kind == RepeatMarkKind::Ending)
+                    else {
+                        return;
+                    };
+                    (
+                        DragTarget::EndingAnchor(index, edit.right),
+                        Vec2::new(if edit.right { mark.end_x } else { mark.x }, mark.y),
+                    )
+                }
+                _ => return,
             };
-            let origin = Vec2::from(if edit.right { span.end } else { span.start });
-            self.select_object(Some(Object::Span(edit.index)));
+            self.select_object(Some(target.object()));
             self.snapshot();
             self.page.object_drag = Some(ObjectDrag {
-                target: DragTarget::Anchor(edit.index, edit.right),
+                target,
                 origin,
                 score: self.page.score.clone(),
             });
@@ -3947,6 +4009,7 @@ impl App {
                                         });
                                     changed |= Self::dot_editor(ui, &mut rest.dots);
                                 }
+                                changed |= ui.checkbox(&mut rest.fermata, i18n::tr("Fermata")).changed();
                                 changed |= ui.checkbox(&mut rest.confirmed, i18n::tr("Reviewed")).changed();
                                 if changed {
                                     self.snapshot();
@@ -4401,6 +4464,30 @@ impl App {
                                     color,
                                     self.page.zoom,
                                 );
+                                if self.page.selected_object == Some(Object::RepeatMark(index)) {
+                                    for (right, x) in [(false, mark.x), (true, mark.end_x)] {
+                                        let center = map(x, mark.y);
+                                        ui.painter().circle_filled(center, 6.0, Color32::WHITE);
+                                        ui.painter().circle_stroke(
+                                            center,
+                                            6.0,
+                                            Stroke::new(2.0_f32, color),
+                                        );
+                                        ui.interact(
+                                            Rect::from_center_size(center, Vec2::splat(20.0)),
+                                            ui.id().with(("ending_anchor_hint", index, right)),
+                                            Sense::hover(),
+                                        )
+                                        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                                        .on_hover_text(
+                                            if right {
+                                                "Endanker ziehen"
+                                            } else {
+                                                "Anfangsanker ziehen"
+                                            },
+                                        );
+                                    }
+                                }
                             }
                             ui.painter().rect_stroke(
                                 rect,
@@ -4600,10 +4687,7 @@ impl App {
                             && let Some(pointer) = response.interact_pointer_pos()
                         {
                             let position = (pointer - rect.min) / self.page.zoom;
-                            let object = self.hit_object(position).map(|target| match target {
-                                DragTarget::Body(object) => object,
-                                DragTarget::Anchor(index, _) => Object::Span(index),
-                            });
+                            let object = self.hit_object(position).map(DragTarget::object);
                             let show_object_list = self.page.show_object_list;
                             self.select_object(object);
                             self.page.show_object_list = show_object_list;
@@ -4628,10 +4712,7 @@ impl App {
                             let position = (pointer - rect.min) / self.page.zoom;
                             if response.clicked() {
                                 let target = self.hit_object(position);
-                                self.select_object(target.map(|target| match target {
-                                    DragTarget::Body(object) => object,
-                                    DragTarget::Anchor(index, _) => Object::Span(index),
-                                }));
+                                self.select_object(target.map(DragTarget::object));
                                 if target.is_none()
                                     && let Some((index, _)) =
                                         self.page.score.staves.iter().enumerate().min_by(
@@ -4652,10 +4733,7 @@ impl App {
                                         (origin - rect.min) / self.page.zoom
                                     });
                                 if let Some(target) = self.hit_object(origin) {
-                                    self.select_object(Some(match target {
-                                        DragTarget::Body(object) => object,
-                                        DragTarget::Anchor(index, _) => Object::Span(index),
-                                    }));
+                                    self.select_object(Some(target.object()));
                                     self.snapshot();
                                     self.page.object_drag = Some(ObjectDrag {
                                         target,
@@ -6201,6 +6279,73 @@ mod tests {
             app.undo();
             assert_eq!(app.page.score.rests[0].duration, Duration::Eighth);
             assert_eq!(app.page.score.rests[0].dots, 2);
+        }
+    }
+
+    #[test]
+    fn rest_fermata_control_is_editable_and_undoable() {
+        for size in [Vec2::new(760.0, 520.0), Vec2::new(1280.0, 820.0)] {
+            let context = egui::Context::default();
+            let mut app = demo_app();
+            let index = app
+                .page
+                .score
+                .add_rest(450.0, 130.0, Duration::Quarter)
+                .unwrap();
+            app.select_object(Some(Object::Rest(index)));
+            let render = |app: &mut App, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.inspector(context),
+                )
+            };
+            for _ in 0..3 {
+                render(&mut app, vec![]);
+            }
+            let output = render(&mut app, vec![]);
+            let position = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "Fermate" => {
+                        let bounds = shape.shape.visual_bounding_rect();
+                        assert!(shape.clip_rect.contains_rect(bounds));
+                        Some(bounds.center())
+                    }
+                    _ => None,
+                })
+                .expect("rest fermata checkbox visible");
+            for expected in [true, false] {
+                for pressed in [true, false] {
+                    render(
+                        &mut app,
+                        vec![
+                            egui::Event::PointerMoved(position),
+                            egui::Event::PointerButton {
+                                pos: position,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: Default::default(),
+                            },
+                        ],
+                    );
+                }
+                assert_eq!(app.page.score.rests[index].fermata, expected);
+                assert_eq!(app.page.score.rests[index].duration, Duration::Quarter);
+                let restored: Score =
+                    serde_json::from_slice(&serde_json::to_vec(&app.page.score).unwrap()).unwrap();
+                assert_eq!(restored.rests[index].fermata, expected);
+                app.undo();
+                assert_eq!(app.page.score.rests[index].fermata, !expected);
+                app.redo();
+                assert_eq!(app.page.score.rests[index].fermata, expected);
+                app.select_object(Some(Object::Rest(index)));
+                render(&mut app, vec![]);
+            }
         }
     }
 
@@ -8593,6 +8738,52 @@ mod tests {
     }
 
     #[test]
+    fn ending_anchors_stop_at_staff_edges_and_do_not_cross() {
+        let mut app = demo_app();
+        app.insert_at(
+            Vec2::new(300.0, 60.0),
+            Insert::RepeatMark(RepeatMarkKind::Ending),
+        );
+        app.page.score.repeat_marks[0].x = 300.0;
+        app.page.score.repeat_marks[0].end_x = 450.0;
+        let original = app.page.score.clone();
+        let staff = &original.staves[0];
+        for (right, delta, expected) in [
+            (false, -10000.0, staff.left),
+            (false, 10000.0, 449.0),
+            (true, -10000.0, 301.0),
+            (true, 10000.0, staff.right),
+        ] {
+            app.page.score = original.clone();
+            let mark = &original.repeat_marks[0];
+            let origin = Vec2::new(if right { mark.end_x } else { mark.x }, mark.y);
+            app.page.object_drag = Some(ObjectDrag {
+                target: DragTarget::EndingAnchor(0, right),
+                origin,
+                score: original.clone(),
+            });
+            app.move_object(origin + Vec2::new(delta, 10000.0));
+            let moved = &app.page.score.repeat_marks[0];
+            assert_eq!(if right { moved.end_x } else { moved.x }, expected);
+            assert_eq!(
+                if right { moved.x } else { moved.end_x },
+                if right { mark.x } else { mark.end_x }
+            );
+            assert_eq!(moved.y, mark.y);
+            assert!(moved.bounds.is_none());
+            assert_eq!(
+                app.hit_object(Vec2::new(moved.x, moved.y)),
+                Some(DragTarget::EndingAnchor(0, false))
+            );
+            assert_eq!(
+                app.hit_object(Vec2::new(moved.end_x, moved.y)),
+                Some(DragTarget::EndingAnchor(0, true))
+            );
+            assert!(app.page.score.validate().is_ok());
+        }
+    }
+
+    #[test]
     fn canvas_drags_all_objects_and_both_anchors_with_one_undo_step() {
         for size in [Vec2::new(760.0, 520.0), Vec2::new(1280.0, 820.0)] {
             for zoom in [0.4, 1.0] {
@@ -8607,6 +8798,8 @@ mod tests {
                     DragTarget::Body(Object::RepeatMark(0)),
                     DragTarget::Anchor(0, false),
                     DragTarget::Anchor(0, true),
+                    DragTarget::EndingAnchor(0, false),
+                    DragTarget::EndingAnchor(0, true),
                 ] {
                     let context = egui::Context::default();
                     let mut app = demo_app();
@@ -8661,7 +8854,7 @@ mod tests {
                         x: 650.0,
                         y: 55.0,
                         kind: RepeatMarkKind::Ending,
-                        end_x: 750.0,
+                        end_x: 700.0,
                         numbers: "1".into(),
                         closed: true,
                         bounds: None,
@@ -8693,9 +8886,14 @@ mod tests {
                                 app.page.score.spans[0].start
                             }
                         }
+                        DragTarget::EndingAnchor(_, right) => {
+                            [if right { 700.0 } else { 650.0 }, 55.0]
+                        }
                     };
                     if matches!(target, DragTarget::Anchor(..)) {
                         app.select_object(Some(Object::Span(0)));
+                    } else if matches!(target, DragTarget::EndingAnchor(..)) {
+                        app.select_object(Some(Object::RepeatMark(0)));
                     }
                     let before = serde_json::to_value(&app.page.score).unwrap();
                     let render = |app: &mut App, events| {
@@ -8768,7 +8966,7 @@ mod tests {
                         DragTarget::Body(Object::RepeatMark(_)) => {
                             let mark = &app.page.score.repeat_marks[0];
                             assert!((mark.x - 680.0).abs() < 0.01);
-                            assert!((mark.end_x - 780.0).abs() < 0.01);
+                            assert!((mark.end_x - 730.0).abs() < 0.01);
                             assert!((mark.y - 65.0).abs() < 0.01);
                             assert!(mark.confirmed);
                         }
@@ -8796,6 +8994,18 @@ mod tests {
                             assert!((moved[1] - source[1] - 10.0).abs() < 0.01);
                             assert_eq!(fixed, expected_fixed);
                         }
+                        DragTarget::EndingAnchor(_, right) => {
+                            let mark = &app.page.score.repeat_marks[0];
+                            let (moved, fixed) = if right {
+                                (mark.end_x, mark.x)
+                            } else {
+                                (mark.x, mark.end_x)
+                            };
+                            assert!((moved - source[0] - 30.0).abs() < 0.01);
+                            assert_eq!(fixed, if right { 650.0 } else { 700.0 });
+                            assert_eq!(mark.y, 55.0);
+                            assert!(mark.confirmed);
+                        }
                     }
                     assert!(app.page.score.validate().is_ok());
                     let after = serde_json::to_value(&app.page.score).unwrap();
@@ -8809,8 +9019,8 @@ mod tests {
     }
 
     #[test]
-    fn preview_drags_both_span_anchors_with_one_undo_step_at_both_scales() {
-        for kind in SpanKind::ALL {
+    fn preview_drags_span_and_ending_anchors_with_one_undo_step_at_both_scales() {
+        for kind in SpanKind::ALL.into_iter().map(Some).chain([None]) {
             for fit in [false, true] {
                 for right in [false, true] {
                     let context = egui::Context::default();
@@ -8826,15 +9036,30 @@ mod tests {
                     for x in [160.0, 300.0, 480.0, 900.0] {
                         app.page.score.add_note(x, 108.0).unwrap();
                     }
-                    app.page.score.spans.push(Span {
-                        staff: 0,
-                        kind,
-                        start: [160.0, 138.0],
-                        end: [480.0, 138.0],
-                        height: 8.0,
-                        confirmed: false,
-                    });
-                    app.select_object(Some(Object::Span(0)));
+                    if let Some(kind) = kind {
+                        app.page.score.spans.push(Span {
+                            staff: 0,
+                            kind,
+                            start: [160.0, 138.0],
+                            end: [480.0, 138.0],
+                            height: 8.0,
+                            confirmed: false,
+                        });
+                        app.select_object(Some(Object::Span(0)));
+                    } else {
+                        app.page.score.repeat_marks.push(RepeatMark {
+                            staff: 0,
+                            kind: RepeatMarkKind::Ending,
+                            x: 160.0,
+                            end_x: 480.0,
+                            y: 30.0,
+                            numbers: "1,2".into(),
+                            closed: false,
+                            bounds: None,
+                            confirmed: false,
+                        });
+                        app.select_object(Some(Object::RepeatMark(0)));
+                    }
                     app.page.preview.fit_width = fit;
                     let before = serde_json::to_value(&app.page.score).unwrap();
                     let render = |app: &mut App, events| {
@@ -8897,18 +9122,32 @@ mod tests {
                         }],
                     );
                     assert_eq!(app.page.undo.len(), 1, "{kind:?}, fit {fit}, right {right}");
-                    let span = &app.page.score.spans[0];
-                    let (moved, fixed, original, expected_fixed) = if right {
-                        (span.end, span.start, [480.0, 138.0], [160.0, 138.0])
+                    if kind.is_some() {
+                        let span = &app.page.score.spans[0];
+                        let (moved, fixed, original, expected_fixed) = if right {
+                            (span.end, span.start, [480.0, 138.0], [160.0, 138.0])
+                        } else {
+                            (span.start, span.end, [160.0, 138.0], [480.0, 138.0])
+                        };
+                        assert!(
+                            moved[0] > original[0] && moved[1] > original[1],
+                            "{kind:?}, fit {fit}, right {right}: {moved:?}"
+                        );
+                        assert_eq!(fixed, expected_fixed);
+                        assert!(span.confirmed);
                     } else {
-                        (span.start, span.end, [160.0, 138.0], [480.0, 138.0])
-                    };
-                    assert!(
-                        moved[0] > original[0] && moved[1] > original[1],
-                        "{kind:?}, fit {fit}, right {right}: {moved:?}"
-                    );
-                    assert_eq!(fixed, expected_fixed);
-                    assert!(span.confirmed);
+                        let mark = &app.page.score.repeat_marks[0];
+                        if right {
+                            assert!(mark.end_x > 480.0);
+                            assert_eq!(mark.x, 160.0);
+                        } else {
+                            assert!(mark.x > 160.0);
+                            assert_eq!(mark.end_x, 480.0);
+                        }
+                        assert_eq!(mark.y, 30.0);
+                        assert!(!mark.closed);
+                        assert!(mark.confirmed);
+                    }
                     assert!(app.page.object_drag.is_none());
                     assert!(app.page.score.validate().is_ok());
                     let after = serde_json::to_value(&app.page.score).unwrap();

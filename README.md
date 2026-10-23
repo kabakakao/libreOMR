@@ -157,6 +157,8 @@ and select one or more files. The included
 [Bach example](examples/public-domain/bach-bwv1013.pdf) is a useful starting point.
 PDF and multipage TIFF files get a separate tab for each page. Pages are analyzed
 sequentially in the background.
+PDF pages render at up to 300 dpi. Large pages are scaled down to at most
+10,000 pixels per side and 64 megapixels while preserving their aspect ratio.
 
 Use **File > Add pages**, or the **+** beside the tabs, to add more pages.
 Drag tabs to reorder them; this also determines export order. **Fit**, the zoom

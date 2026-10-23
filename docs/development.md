@@ -66,7 +66,9 @@ are required. See [Screenshots](../assets/screenshots/README.md) for captures.
   Bravura symbols, scrolling and note/rest selection; transparent accidental
   glyphs and shared slur/tie/wedge drawing for preview and scan overlay.
 - `src/document_import.rs`: page discovery and page-by-page PDF/TIFF/image import;
-  PDF rasterization with `hayro` at 300 dpi on white, with image-size validation.
+  PDF rasterization with `hayro` at up to 300 dpi on white. Large pages render
+  directly at a reduced resolution (at most 10,000 pixels per side and
+  64 megapixels) while preserving their aspect ratio.
   PDF pages share one loaded document without rasterizing all pages up front.
 - `src/tiff_import.rs`: TIFF image-directory enumeration and selection, with a
   Fax3 fallback using `hayro-ccitt` and `tiff` metadata. Other compression types
