@@ -94,7 +94,11 @@ pub fn windows_wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     // machines with a broken D3D driver without loading OpenGL during normal startup.
     setup.instance_descriptor.backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::DX12);
     // FXC is part of Windows; do not require a separately installed DXC DLL.
-    setup.instance_descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    setup
+        .instance_descriptor
+        .backend_options
+        .dx12
+        .shader_compiler = wgpu::Dx12Compiler::Fxc;
     eframe::egui_wgpu::WgpuConfiguration {
         wgpu_setup: setup.into(),
         ..Default::default()
