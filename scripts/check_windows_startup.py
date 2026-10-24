@@ -24,6 +24,8 @@ def check(binary):
     user32.GetWindowTextW.restype = ctypes.c_int
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetDlgItem.restype = wintypes.HWND
     user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.PostMessageW.restype = wintypes.BOOL
 
@@ -66,10 +68,14 @@ def check(binary):
                     raise AssertionError("No visible native error dialog after renderer failure")
 
                 text = []
+                ok_buttons = []
 
                 @callback_type
                 def collect_text(window, _):
-                    text.append(window_text(window))
+                    label = window_text(window)
+                    text.append(label)
+                    if label.replace("&", "").strip() == "OK":
+                        ok_buttons.append(window)
                     return True
 
                 user32.EnumChildWindows(dialogs[0], collect_text, 0)
@@ -77,8 +83,14 @@ def check(binary):
                 for expected in ("Technische Details:", "Fehlerbericht:", "error.log", "Direct3D 12"):
                     if expected not in description:
                         raise AssertionError(f"Error dialog is missing {expected!r}: {description}")
-                # Dismiss OK through the dialog's normal command handler.
-                if not user32.PostMessageW(dialogs[0], 0x0111, 1, 0):  # WM_COMMAND / IDOK
+                # Click the actual OK control. A synthetic WM_COMMAND without
+                # its control HWND is ignored by the system's MessageBox.
+                button = user32.GetDlgItem(dialogs[0], 1)  # IDOK
+                if not button and ok_buttons:
+                    button = ok_buttons[0]
+                if not button:
+                    raise AssertionError(f"The native error dialog has no OK button: {description}")
+                if not user32.PostMessageW(button, 0x00F5, 0, 0):  # BM_CLICK
                     raise ctypes.WinError(ctypes.get_last_error())
                 if process.wait(timeout=10) == 0:
                     raise AssertionError("Renderer failure returned a successful exit code")
