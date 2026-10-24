@@ -33,7 +33,9 @@ jobs:
           key: quality
           cache-on-failure: true
       - name: Linux desktop dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libegl1-mesa-dev desktop-file-utils
+      - name: Linux desktop entry
+        run: desktop-file-validate assets/linux/org.libreomr.libreomr.desktop
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Headless benchmark check
@@ -72,9 +74,14 @@ jobs:
       - name: Build binaries
         run: cargo build --profile ci --locked
       - uses: actions/setup-python@v7
-        if: github.ref_type != 'tag'
         with:
           python-version: '3.x'
+      - name: Windows executable icon
+        if: runner.os == 'Windows'
+        run: python scripts/check_windows_icon.py target/ci/libreomr.exe
+      - name: Windows startup error dialog
+        if: runner.os == 'Windows'
+        run: python scripts/check_windows_startup.py target/ci/libreomr.exe
       - name: Package development build
         if: github.ref_type != 'tag'
         run: python scripts/package_release.py --profile ci

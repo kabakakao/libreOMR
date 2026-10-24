@@ -5,8 +5,11 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import plistlib
 import re
 import shutil
+import stat
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -21,6 +24,8 @@ TARGETS = {
     "aarch64-pc-windows-msvc": "zip",
     "aarch64-apple-darwin": "zip",
 }
+APP_ID = "org.libreomr.libreomr"
+ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
 
 
 def command(args, root=ROOT):
@@ -112,6 +117,32 @@ def copy_notices(root, stage, data):
     (stage / "THIRD_PARTY_NOTICES.md").write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
+def validate_macos_bundle(bundle):
+    with (bundle / "Contents/Info.plist").open("rb") as source:
+        info = plistlib.load(source)
+    if info.get("CFBundleIdentifier") != APP_ID or info.get("CFBundleExecutable") != "libreomr":
+        raise ValueError("Unexpected macOS bundle identifier or executable")
+    icon_name = info.get("CFBundleIconFile", "")
+    if not icon_name or Path(icon_name).name != icon_name:
+        raise ValueError("Missing or invalid macOS bundle icon reference")
+    icon = (bundle / "Contents/Resources" / icon_name).read_bytes()
+    if len(icon) <= 8 or icon[:4] != b"icns" or struct.unpack(">I", icon[4:8])[0] != len(icon):
+        raise ValueError("Invalid macOS ICNS icon")
+    if not (bundle / "Contents/MacOS/libreomr").is_file():
+        raise ValueError("Missing macOS application executable")
+
+
+def copy_linux_desktop(root, stage):
+    applications = stage / "share/applications"
+    applications.mkdir(parents=True)
+    shutil.copy2(root / f"assets/linux/{APP_ID}.desktop", applications)
+    for size in ICON_SIZES:
+        destination = stage / f"share/icons/hicolor/{size}x{size}/apps"
+        destination.mkdir(parents=True)
+        shutil.copy2(root / f"assets/icons/{size}x{size}/{APP_ID}.png", destination)
+    shutil.copy2(root / "scripts/install_linux_desktop.py", stage / "install-desktop.py")
+
+
 def assemble(root, stage, data, profile, target, commit, dirty, tag=None):
     version = project_package(data)["version"]
     if target not in TARGETS:
@@ -132,6 +163,7 @@ def assemble(root, stage, data, profile, target, commit, dirty, tag=None):
     shutil.copytree(root / "assets/screenshots", stage / "assets/screenshots")
     copy_notices(root, stage, data)
     if target.endswith("apple-darwin"):
+        validate_macos_bundle(binary_dir / "libreOMR.app")
         shutil.copytree(binary_dir / "libreOMR.app", stage / "libreOMR.app")
         resources = stage / "libreOMR.app/Contents/Resources"
         shutil.copytree(stage / "licenses", resources / "licenses")
@@ -139,6 +171,8 @@ def assemble(root, stage, data, profile, target, commit, dirty, tag=None):
             shutil.copy2(stage / name, resources / name)
     else:
         shutil.copy2(binary_dir / f"libreomr{extension}", stage)
+        if target.endswith("linux-gnu"):
+            copy_linux_desktop(root, stage)
     shutil.copy2(binary_dir / f"omr-benchmark{extension}", stage)
     (stage / "build-info.json").write_text(json.dumps({
         "version": version, "commit": commit, "dirty": dirty,
@@ -150,14 +184,27 @@ def assemble(root, stage, data, profile, target, commit, dirty, tag=None):
 def archive_package(stage, output, target):
     extension = "tar.gz" if target == "source" else TARGETS[target]
     archive = output / f"{stage.name}.{extension}"
+    executables = {"libreomr", "omr-benchmark", "libreOMR.app/Contents/MacOS/libreomr"}
     if extension == "tar.gz":
+        def permissions(info):
+            if info.isfile() and info.name.removeprefix(stage.name + "/") in executables:
+                info.mode = 0o755
+            return info
+
         with tarfile.open(archive, "w:gz") as bundle:
-            bundle.add(stage, arcname=stage.name)
+            bundle.add(stage, arcname=stage.name, filter=permissions)
     else:
         # Registry crates can have normalized timestamps predating ZIP's 1980 epoch.
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as bundle:
             for path in sorted(stage.rglob("*")):
-                bundle.write(path, path.relative_to(stage.parent))
+                relative = path.relative_to(stage.parent)
+                if path.is_file() and path.relative_to(stage).as_posix() in executables:
+                    info = zipfile.ZipInfo.from_file(path, relative, strict_timestamps=False)
+                    info.create_system = 3  # Unix mode bits, including on a Windows packaging host.
+                    info.external_attr = (stat.S_IFREG | 0o755) << 16
+                    bundle.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+                else:
+                    bundle.write(path, relative)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (output / f"{archive.name}.sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     return archive
@@ -221,6 +268,9 @@ def main():
             raise ValueError("Tagged packages require a clean checkout and the release profile")
     if target.endswith("apple-darwin"):
         subprocess.run(["sh", "scripts/build-macos-app.sh", "--profile", args.profile, "--no-build"], cwd=ROOT, check=True)
+    if target.endswith("windows-msvc"):
+        from check_windows_icon import check
+        check(ROOT / "target" / args.profile / "libreomr.exe")
     # Metadata resolves the complete graph and makes the crate license files available.
     data = metadata(dependencies=True)
     args.output.mkdir(parents=True, exist_ok=True)

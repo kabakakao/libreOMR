@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=libreOMR
+GenericName=Optical Music Recognition
+GenericName[de]=Optische Notenerkennung
+Comment=Recognize, review and export printed sheet music
+Comment[de]=Gedruckte Noten erkennen, prüfen und exportieren
+Exec=libreomr
+Icon=org.libreomr.libreomr
+Terminal=false
+Categories=AudioVideo;Music;
+StartupWMClass=org.libreomr.libreomr
+StartupNotify=false

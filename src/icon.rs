@@ -1,4 +1,4 @@
-const ICON_PNG: &[u8] = include_bytes!("../assets/libreomr-icon-dark.png");
+const ICON_PNG: &[u8] = include_bytes!("../assets/icons/256x256/org.libreomr.libreomr.png");
 
 pub fn window_icon() -> eframe::egui::IconData {
     eframe::icon_data::from_png_bytes(ICON_PNG).expect("embedded app icon must be a valid PNG")
@@ -13,7 +13,9 @@ pub fn set_dock_icon() {
     use objc2_foundation::NSData;
 
     let main_thread = MainThreadMarker::new().expect("the app must start on the main thread");
-    let data = NSData::with_bytes(ICON_PNG);
+    let data = NSData::with_bytes(include_bytes!(
+        "../assets/icons/1024x1024/org.libreomr.libreomr.png"
+    ));
     let image = NSImage::initWithData(NSImage::alloc(), &data)
         .expect("embedded app icon must be readable by AppKit");
     let application = NSApplication::sharedApplication(main_thread);

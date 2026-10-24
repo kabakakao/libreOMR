@@ -52,6 +52,9 @@ Die dargestellten Vorschläge sind kein fertig korrigiertes Notenergebnis.
 Veröffentlichte Versionen stehen unter
 [GitHub Releases](https://github.com/kabakakao/libreOMR/releases) bereit:
 
+Die [Versionshinweise zu 0.1.1](docs/release-notes/0.1.1.md) beschreiben die
+Verbesserungen beim Windows-Start, bei Fehlermeldungen und Anwendungssymbolen.
+
 | Plattform | Paket |
 | --- | --- |
 | Windows x86_64 | ZIP mit `libreomr.exe` |
@@ -65,13 +68,56 @@ noch nicht signiert oder notarisiert; macOS kann deshalb die Freigabe unter
 **Systemeinstellungen > Datenschutz & Sicherheit** verlangen. Intel-Macs
 werden nicht unterstützt.
 
+Die Windows-EXE enthält das Anwendungssymbol für Explorer und Verknüpfungen
+in mehreren Auflösungen. Das macOS-App-Bundle enthält ein Finder-/Dock-Symbol
+einschließlich Retina-Auflösungen.
+
 Unter Linux wird eine grafische X11- oder Wayland-Sitzung mit den
 Systembibliotheken für XKB, Wayland und EGL benötigt. Der Dateidialog verwendet
 `xdg-desktop-portal` mit dem zur Desktop-Umgebung passenden Portal-Backend.
 
+Das Linux-Archiv enthält außerdem einen Desktop-Eintrag und Icons für das
+Anwendungsmenü. Nach dem Entpacken an einen dauerhaften Ort lassen sie sich
+ohne Administratorrechte für den aktuellen Benutzer einrichten:
+
+```sh
+python3 install-desktop.py
+```
+
+Den Befehl im entpackten Paketordner ausführen (Python 3 erforderlich).
+Der Menüeintrag startet das Programm aus diesem Ordner. Nach dem Verschieben
+des Ordners den Befehl erneut ausführen. Die Dateien werden unter
+`${XDG_DATA_HOME:-~/.local/share}` in `applications` und `icons/hicolor` abgelegt.
+
+Unter Windows verwendet der Build den mitgelieferten **wgpu-Renderer mit
+Direct3D 12**. Ein zusätzlicher OpenGL-Treiber oder eine separat heruntergeladene
+OpenGL-DLL ist dafür nicht erforderlich. Benötigt werden Windows 10/11 und
+funktionierende Direct3D-12-Unterstützung durch Windows und den Grafiktreiber.
+
+Falls das Programm beim Start oder im Betrieb einen Fehler meldet, erscheint
+ein nativer Fehlerdialog auch dann, wenn das Hauptfenster noch nicht geöffnet
+werden konnte. Der Dialog enthält die technischen Details und den Pfad zum
+Fehlerbericht. Unter Windows liegt dieser normalerweise unter
+`%LOCALAPPDATA%\libreOMR\error.log`, ersatzweise unter
+`%TEMP%\libreOMR\error.log`. Rust-Panics werden ebenfalls gemeldet und mit einem
+Stacktrace protokolliert. Fehlerberichte können einer Fehlermeldung beigefügt
+werden.
+
+Bei Grafikproblemen zuerst Windows und den Grafiktreiber vom Gerätehersteller
+aktualisieren; in virtuellen Maschinen auch die Gast-Erweiterungen prüfen.
+Als Alternative zu Direct3D 12 kann bei vorhandenem Vulkan-Treiber in PowerShell
+gestartet werden:
+
+```powershell
+$env:WGPU_BACKEND = 'vulkan'
+.\libreomr.exe
+```
+
+Die Einstellung gilt für diese PowerShell-Sitzung. Mit
+`Remove-Item Env:WGPU_BACKEND` wird sie zurückgesetzt.
+
 Jedes Release enthält das öffentliche Bach-Beispiel, Lizenzhinweise und
-SHA-256-Prüfsummen. Solange noch kein Release veröffentlicht ist, lässt sich
-libreOMR aus dem Quellcode bauen.
+SHA-256-Prüfsummen. Alternativ lässt sich libreOMR aus dem Quellcode bauen.
 
 ### Aus dem Quellcode bauen
 
