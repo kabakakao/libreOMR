@@ -16,9 +16,9 @@ impl Clef {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Treble => "Violinschluessel",
-            Self::Bass => "Bassschluessel",
-            Self::Unknown => "Unbekannt",
+            Self::Treble => crate::i18n::tr("Treble clef"),
+            Self::Bass => crate::i18n::tr("Bass clef"),
+            Self::Unknown => crate::i18n::tr("Unknown"),
         }
     }
 
@@ -133,21 +133,21 @@ impl KeySignature {
 
     pub fn label(self) -> String {
         let names = [
-            "Ces-Dur / as-Moll",
-            "Ges-Dur / es-Moll",
-            "Des-Dur / b-Moll",
-            "As-Dur / f-Moll",
-            "Es-Dur / c-Moll",
-            "B-Dur / g-Moll",
-            "F-Dur / d-Moll",
-            "C-Dur / a-Moll",
-            "G-Dur / e-Moll",
-            "D-Dur / h-Moll",
-            "A-Dur / fis-Moll",
-            "E-Dur / cis-Moll",
-            "H-Dur / gis-Moll",
-            "Fis-Dur / dis-Moll",
-            "Cis-Dur / ais-Moll",
+            crate::i18n::tr("C-flat major / A-flat minor"),
+            crate::i18n::tr("G-flat major / E-flat minor"),
+            crate::i18n::tr("D-flat major / B-flat minor"),
+            crate::i18n::tr("A-flat major / F minor"),
+            crate::i18n::tr("E-flat major / C minor"),
+            crate::i18n::tr("B-flat major / G minor"),
+            crate::i18n::tr("F major / D minor"),
+            crate::i18n::tr("C major / A minor"),
+            crate::i18n::tr("G major / E minor"),
+            crate::i18n::tr("D major / B minor"),
+            crate::i18n::tr("A major / F-sharp minor"),
+            crate::i18n::tr("E major / C-sharp minor"),
+            crate::i18n::tr("B major / G-sharp minor"),
+            crate::i18n::tr("F-sharp major / D-sharp minor"),
+            crate::i18n::tr("C-sharp major / A-sharp minor"),
         ];
         names[(self.fifths.clamp(-7, 7) + 7) as usize].into()
     }
@@ -182,7 +182,7 @@ impl Rest {
                     ".".repeat(usize::from(self.dots))
                 )
             },
-            |count| format!("{count} Takte"),
+            |count| crate::i18n::format("{count} measures", &[("count", format!("{}", count))]),
         )
     }
 }
@@ -204,17 +204,17 @@ impl Articulation {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::None => "Keine",
-            Self::Staccato => "Staccato",
-            Self::Accent => "Akzent",
-            Self::Tenuto => "Tenuto",
-            Self::Fermata => "Fermate",
-            Self::Marcato => "Marcato (Huetchen)",
-            Self::Staccatissimo => "Staccatissimo",
-            Self::Portato => "Portato (Tenuto + Staccato)",
-            Self::AccentStaccato => "Akzent + Staccato",
-            Self::TenutoAccent => "Tenuto + Akzent",
-            Self::MarcatoStaccato => "Marcato + Staccato",
+            Self::None => crate::i18n::tr("None"),
+            Self::Staccato => crate::i18n::tr("Staccato"),
+            Self::Accent => crate::i18n::tr("Accent"),
+            Self::Tenuto => crate::i18n::tr("Tenuto"),
+            Self::Fermata => crate::i18n::tr("Fermata"),
+            Self::Marcato => crate::i18n::tr("Marcato (hat)"),
+            Self::Staccatissimo => crate::i18n::tr("Staccatissimo"),
+            Self::Portato => crate::i18n::tr("Portato (tenuto + staccato)"),
+            Self::AccentStaccato => crate::i18n::tr("Accent + staccato"),
+            Self::TenutoAccent => crate::i18n::tr("Tenuto + accent"),
+            Self::MarcatoStaccato => crate::i18n::tr("Marcato + staccato"),
         }
     }
 }
@@ -372,9 +372,9 @@ impl RepeatMarkKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Segno => "Segno",
-            Self::Coda => "Coda",
-            Self::Ending => "Voltenklammer",
+            Self::Segno => crate::i18n::tr("Segno"),
+            Self::Coda => crate::i18n::tr("Coda"),
+            Self::Ending => crate::i18n::tr("Volta bracket"),
         }
     }
 
@@ -477,7 +477,7 @@ impl TimeSignature {
     pub fn label(self) -> String {
         match self {
             Self::Common => "C (4/4)".into(),
-            Self::Cut => "Alla breve (2/2)".into(),
+            Self::Cut => crate::i18n::tr("Alla breve (2/2)").into(),
             Self::Meter { beats, beat_unit } => format!("{beats}/{beat_unit}"),
         }
     }
@@ -621,7 +621,11 @@ impl Note {
             self.duration.label(),
             ".".repeat(usize::from(self.dots)),
             ratio,
-            if self.grace { " Vorschlag" } else { "" }
+            if self.grace {
+                crate::i18n::tr(" grace")
+            } else {
+                ""
+            }
         )
     }
 
@@ -700,10 +704,10 @@ impl SpanKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Crescendo => "Crescendo",
-            Self::Decrescendo => "Decrescendo",
-            Self::Slur => "Bindebogen",
-            Self::Tie => "Haltebogen",
+            Self::Crescendo => crate::i18n::tr("Crescendo"),
+            Self::Decrescendo => crate::i18n::tr("Decrescendo"),
+            Self::Slur => crate::i18n::tr("Slur"),
+            Self::Tie => crate::i18n::tr("Tie"),
         }
     }
 }
@@ -762,12 +766,12 @@ impl BarlineKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Single => "Einfach",
-            Self::Double => "Doppelstrich",
-            Self::Final => "Schlussstrich",
-            Self::RepeatStart => "Wiederholung Anfang",
-            Self::RepeatEnd => "Wiederholung Ende",
-            Self::RepeatBoth => "Wiederholung beidseitig",
+            Self::Single => crate::i18n::tr("Single"),
+            Self::Double => crate::i18n::tr("Double"),
+            Self::Final => crate::i18n::tr("Final"),
+            Self::RepeatStart => crate::i18n::tr("Repeat start"),
+            Self::RepeatEnd => crate::i18n::tr("Repeat end"),
+            Self::RepeatBoth => crate::i18n::tr("Repeat both"),
         }
     }
 }
@@ -986,7 +990,7 @@ impl Score {
                 })
                 || mark.bounds.as_ref().is_some_and(|bounds| !bounds.valid())
             {
-                return Err("Ungueltiges Wiederholungszeichen im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid repeat mark in project.").into());
             }
         }
         for dynamic in &self.dynamics {
@@ -1001,7 +1005,7 @@ impl Score {
                     .as_ref()
                     .is_some_and(|bounds| !bounds.valid())
             {
-                return Err("Ungueltige Dynamik im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid dynamic in project.").into());
             }
         }
         for change in &self.time_changes {
@@ -1013,7 +1017,7 @@ impl Score {
                 || !change.time_signature.valid()
                 || change.bounds.iter().any(|bounds| !bounds.valid())
             {
-                return Err("Ungueltiger Taktwechsel im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid time change in project.").into());
             }
         }
         for change in &self.key_changes {
@@ -1025,7 +1029,7 @@ impl Score {
                 || !(-7..=7).contains(&change.key_signature.fifths)
                 || change.bounds.iter().any(|bounds| !bounds.valid())
             {
-                return Err("Ungueltiger Tonartwechsel im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid key change in project.").into());
             }
         }
         for span in &self.spans {
@@ -1043,7 +1047,7 @@ impl Score {
                 || (matches!(span.kind, SpanKind::Crescendo | SpanKind::Decrescendo)
                     && span.height <= 0.0)
             {
-                return Err("Ungueltige Gabel oder ungueltiger Bogen im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid wedge, slur or tie in project.").into());
             }
         }
         for bar in &self.barlines {
@@ -1053,7 +1057,7 @@ impl Score {
                     .get(bar.staff)
                     .is_none_or(|staff| bar.x < staff.left || bar.x > staff.right)
             {
-                return Err("Ungueltiger Taktstrich im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid barline in project.").into());
             }
         }
         for staff in &self.staves {
@@ -1082,7 +1086,7 @@ impl Score {
                     .is_some_and(|key| !(-7..=7).contains(&key.fifths))
                 || staff.header.key_bounds.iter().any(|bounds| !bounds.valid())
             {
-                return Err("Ungueltiges Notensystem im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid staff in project.").into());
             }
         }
         for note in &self.notes {
@@ -1094,7 +1098,7 @@ impl Score {
                 || note.dots > 2
                 || note.tuplet.is_some_and(|ratio| !ratio.valid())
             {
-                return Err("Ungueltige Note im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid note in project.").into());
             }
         }
         for rest in &self.rests {
@@ -1108,7 +1112,7 @@ impl Score {
                     .is_some_and(|count| !(2..=99).contains(&count))
                 || rest.bounds.as_ref().is_some_and(|bounds| !bounds.valid())
             {
-                return Err("Ungueltige Pause im Projekt.".into());
+                return Err(crate::i18n::tr("Invalid rest in project.").into());
             }
         }
         Ok(())
@@ -1144,12 +1148,20 @@ impl ProjectDocument {
         struct Version {
             version: u32,
         }
-        let version: Version =
-            serde_json::from_slice(bytes).map_err(|error| format!("Projekt unlesbar: {error}"))?;
+        let version: Version = serde_json::from_slice(bytes).map_err(|error| {
+            crate::i18n::format(
+                "Cannot read project: {error}",
+                &[("error", format!("{}", error))],
+            )
+        })?;
         let document = match version.version {
             1 => {
-                let project: Project = serde_json::from_slice(bytes)
-                    .map_err(|error| format!("Projekt unlesbar: {error}"))?;
+                let project: Project = serde_json::from_slice(bytes).map_err(|error| {
+                    crate::i18n::format(
+                        "Cannot read project: {error}",
+                        &[("error", format!("{}", error))],
+                    )
+                })?;
                 Self {
                     version: 2,
                     pages: vec![ProjectPage {
@@ -1159,17 +1171,27 @@ impl ProjectDocument {
                     }],
                 }
             }
-            2 => serde_json::from_slice(bytes)
-                .map_err(|error| format!("Projekt unlesbar: {error}"))?,
-            _ => return Err("Unbekannte Projektversion.".into()),
+            2 => serde_json::from_slice(bytes).map_err(|error| {
+                crate::i18n::format(
+                    "Cannot read project: {error}",
+                    &[("error", format!("{}", error))],
+                )
+            })?,
+            _ => return Err(crate::i18n::tr("Unknown project version.").into()),
         };
         if document.pages.is_empty() {
-            return Err("Projekt enthaelt keine Seiten.".into());
+            return Err(crate::i18n::tr("Project contains no pages.").into());
         }
         for (index, page) in document.pages.iter().enumerate() {
-            page.score
-                .validate()
-                .map_err(|error| format!("Seite {}: {error}", index + 1))?;
+            page.score.validate().map_err(|error| {
+                crate::i18n::format(
+                    "Page {0}: {error}",
+                    &[
+                        ("0", format!("{}", index + 1)),
+                        ("error", error.to_string()),
+                    ],
+                )
+            })?;
         }
         Ok(document)
     }

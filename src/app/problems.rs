@@ -69,8 +69,13 @@ impl App {
                     measure: None,
                     x: None,
                     severity: Severity::Error,
-                    message: format!("Seitenimport fehlgeschlagen: {error}"),
-                    help: "Die Seite erneut importieren oder entfernen; der Export benötigt alle Seiten.",
+                    message: i18n::format(
+                        "Page import failed: {error}",
+                        &[("error", error.to_string())],
+                    ),
+                    help: i18n::tr(
+                        "Import the page again or remove it; export requires all pages.",
+                    ),
                 });
             }
         }
@@ -277,20 +282,19 @@ impl App {
         egui::TopBottomPanel::bottom("status").show(context, |ui| {
             ui.horizontal(|ui| {
                 let text = if errors + warnings > 0 {
-                    format!("{}  {} Probleme", icons::WARNING, errors + warnings)
-                } else if complete { format!("{}  Keine Exportprobleme", icons::CHECK_CIRCLE) }
-                else { "Exportprüfung ausstehend".into() };
+                    i18n::format("{0}  {1} problems", &[("0", icons::WARNING.to_string()), ("1", format!("{}", errors + warnings))])
+                } else if complete { i18n::format("{0}  No export problems", &[("0", icons::CHECK_CIRCLE.to_string())]) }
+                else { i18n::tr("Export check pending").into() };
                 let color = if errors > 0 { ui.visuals().error_fg_color }
                     else if warnings > 0 { ui.visuals().warn_fg_color } else { ui.visuals().text_color() };
                 if ui.add_enabled(self.pending.is_none(), egui::Button::new(egui::RichText::new(text).color(color))
                     .selected(self.problems.show && self.problems.filter == Filter::Problems))
-                    .on_hover_text(format!("{errors} Exportfehler, {warnings} Warnungen. Klicken öffnet die Fundstellen mit Korrekturhinweisen.{}",
-                        if complete { "" } else { " Weitere Seiten werden noch verarbeitet." })).clicked()
+                    .on_hover_text(i18n::format("{errors} export errors, {warnings} warnings. Click to open the affected locations and correction tips.{0}", &[("errors", format!("{}", errors)), ("warnings", format!("{}", warnings)), ("0", (if complete { "" } else { i18n::tr(" More pages are still being processed.") }).to_string())])).clicked()
                 {
                     self.problems.show = !self.problems.show || self.problems.filter != Filter::Problems;
                     self.problems.filter = Filter::Problems;
                 }
-                if ui.add_enabled(self.pending.is_none(), egui::Button::new(format!("{review} ungeprüft"))
+                if ui.add_enabled(self.pending.is_none(), egui::Button::new(i18n::format("{review} unreviewed", &[("review", format!("{}", review))]))
                     .selected(self.problems.show && self.problems.filter == Filter::Review)).clicked()
                 {
                     self.problems.show = !self.problems.show || self.problems.filter != Filter::Review;
@@ -298,7 +302,7 @@ impl App {
                 }
                 if self.pending.is_some() || self.running_import.is_some() || self.discovery.is_some() { ui.spinner(); }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(if self.dirty { "Ungespeichert" } else if self.project_path.is_some() { "Gespeichert" } else { "Demo" });
+                    ui.weak(if self.dirty { i18n::tr("Unsaved") } else if self.project_path.is_some() { i18n::tr("Saved") } else { i18n::tr("Demo") });
                     ui.add(egui::Label::new(egui::RichText::new(&self.status).color(if self.status_error {
                         ui.visuals().error_fg_color
                     } else { ui.visuals().weak_text_color() })).truncate()).on_hover_text(&self.status);
@@ -317,34 +321,34 @@ impl App {
             .max_height((context.content_rect().height() * 0.35).max(120.0))
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong("Exportprüfung");
+                    ui.strong(i18n::tr("Export check"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(icons::X).on_hover_text("Problemliste schließen").clicked() { self.problems.show = false; }
+                        if ui.button(icons::X).on_hover_text(i18n::tr("Close problem list")).clicked() { self.problems.show = false; }
                         let enabled = !self.visible_problems().is_empty() && self.pending.is_none();
-                        if ui.add_enabled(enabled, egui::Button::new(icons::ARROW_RIGHT)).on_hover_text("Nächste Fundstelle").clicked() { self.next_problem(false); }
-                        if ui.add_enabled(enabled, egui::Button::new(icons::ARROW_LEFT)).on_hover_text("Vorherige Fundstelle").clicked() { self.next_problem(true); }
+                        if ui.add_enabled(enabled, egui::Button::new(icons::ARROW_RIGHT)).on_hover_text(i18n::tr("Next location")).clicked() { self.next_problem(false); }
+                        if ui.add_enabled(enabled, egui::Button::new(icons::ARROW_LEFT)).on_hover_text(i18n::tr("Previous location")).clicked() { self.next_problem(true); }
                     });
                 });
                 ui.horizontal_wrapped(|ui| {
                     let issues = self.problems.cache.as_deref().unwrap_or_default();
                     let problems = issues.iter().filter(|issue| issue.severity != Severity::Review).count();
                     let review = issues.len() - problems;
-                    ui.selectable_value(&mut self.problems.filter, Filter::Problems, format!("Probleme ({problems})"));
-                    ui.selectable_value(&mut self.problems.filter, Filter::Review, format!("Ungeprüft ({review})"));
-                    ui.selectable_value(&mut self.problems.filter, Filter::All, "Alle");
+                    ui.selectable_value(&mut self.problems.filter, Filter::Problems, i18n::format("Problems ({problems})", &[("problems", format!("{}", problems))]));
+                    ui.selectable_value(&mut self.problems.filter, Filter::Review, i18n::format("Unreviewed ({review})", &[("review", format!("{}", review))]));
+                    ui.selectable_value(&mut self.problems.filter, Filter::All, i18n::tr("All"));
                 });
                 let visible = self.visible_problems();
                 let current = self.problems.cache.as_ref().and_then(|issues| issues.iter().find(|issue| self.is_current_problem(issue)));
                 let help = current.map(|issue| issue.help).unwrap_or(if self.problems.cursor.is_some() {
-                    "Fundstelle behoben oder verändert. Mit dem Pfeil zur nächsten Stelle."
-                } else { "Fundstelle anklicken; Korrekturen rechts oder direkt im Scan vornehmen." });
+                    i18n::tr("Location fixed or changed. Use the arrow to move to the next location.")
+                } else { i18n::tr("Click a location; make corrections on the right or directly in the scan.") });
                 ui.add(egui::Label::new(help).truncate()).on_hover_text(help);
-                if !self.document_ready() { ui.weak("Teilprüfung: Weitere Seiten stehen noch aus; Export nach Abschluss aller Analysen."); }
+                if !self.document_ready() { ui.weak(i18n::tr("Partial check: more pages are pending; export is available after all analyses finish.")); }
                 ui.separator();
                 if visible.is_empty() {
-                    ui.label(if self.problems.filter == Filter::Review { "Keine ungeprüften Symbole." }
-                        else if self.document_ready() { "Keine Fundstellen in diesem Filter." }
-                        else { "Noch keine Fundstellen. Prüfung nach der Erkennung." });
+                    ui.label(if self.problems.filter == Filter::Review { i18n::tr("No unreviewed symbols.") }
+                        else if self.document_ready() { i18n::tr("No locations match this filter.") }
+                        else { i18n::tr("No locations yet. The check runs after recognition.") });
                 }
                 let mut selected = None;
                 let reveal = std::mem::take(&mut self.problems.reveal_row);
@@ -357,19 +361,19 @@ impl App {
                         for position in range {
                             let index = visible[position];
                             let issue = &self.problems.cache.as_ref().unwrap()[index];
-                            let mut location = format!("Seite {}", issue.page + 1);
+                            let mut location = i18n::format("Page {0}", &[("0", format!("{}", issue.page + 1))]);
                             if let Some(staff) = issue.staff {
                                 let score = &self.page_at(issue.page).score;
                                 let row = score.staves.iter().filter(|other| other.lines[0] < score.staves[staff].lines[0]).count() + 1;
-                                location.push_str(&format!(" · System {row}"));
+                                location.push_str(&i18n::format(" · Staff {row}", &[("row", format!("{}", row))]));
                             }
-                            if let Some(measure) = issue.measure { location.push_str(&format!(" · Takt {measure}")); }
+                            if let Some(measure) = issue.measure { location.push_str(&i18n::format(" · Measure {measure}", &[("measure", format!("{}", measure))])); }
                             let (icon, color) = match issue.severity {
                                 Severity::Error => (icons::X_CIRCLE, ui.visuals().error_fg_color),
                                 Severity::Warning => (icons::WARNING, ui.visuals().warn_fg_color),
                                 Severity::Review => (icons::CIRCLE, ui.visuals().weak_text_color()),
                             };
-                            let message = issue.measure.and_then(|measure| issue.message.strip_prefix(&format!("Takt {measure}: "))).unwrap_or(&issue.message);
+                            let message = issue.measure.and_then(|measure| issue.message.strip_prefix(&i18n::format("Measure {measure}: ", &[("measure", format!("{}", measure))]))).unwrap_or(&issue.message);
                             let current = self.is_current_problem(issue);
                             let response = ui.add_enabled(self.pending.is_none(),
                                 egui::Button::new(egui::RichText::new(format!("{icon}  {location}: {message}")).color(color))

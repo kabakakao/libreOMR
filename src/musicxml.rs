@@ -26,7 +26,15 @@ impl Warnings {
     fn report(&mut self, issue: Issue) {
         self.messages.push(issue.staff.map_or_else(
             || issue.message.clone(),
-            |staff| format!("System {}: {}", staff + 1, issue.message),
+            |staff| {
+                crate::i18n::format(
+                    "Staff {0}: {1}",
+                    &[
+                        ("0", format!("{}", staff + 1)),
+                        ("1", issue.message.to_string()),
+                    ],
+                )
+            },
         ));
         self.issues.push(issue);
     }
@@ -126,11 +134,8 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
                 span.staff,
                 Some(Object::Span(span_index)),
                 Some(span.start[0]),
-                format!(
-                    "{} ohne eindeutige Notenanker; wird ausgelassen.",
-                    span.kind.label()
-                ),
-                "Anfang und Ende im Scan an zwei verschiedene Noten ziehen oder den Bogen löschen.",
+                crate::i18n::format("{0} without clear note anchors; omitted.", &[("0", span.kind.label().to_string())]),
+                crate::i18n::tr("Drag the start and end to two different notes in the scan, or delete the slur/tie."),
             ));
             continue;
         };
@@ -150,8 +155,8 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
         {
             warnings.report(Issue::warning(
                 span.staff, Some(Object::Span(span_index)), Some(span.start[0]),
-                "Haltebogen verbindet keine benachbarten gleichen Toene; wird ausgelassen.",
-                "Tonhöhen und Vorzeichen prüfen; gegebenenfalls in einen Bindebogen ändern oder die Anker verschieben.",
+                crate::i18n::tr("Tie does not connect adjacent notes of the same pitch; omitted."),
+                crate::i18n::tr("Check pitches and accidentals; change to a slur or move the anchors if needed."),
             ));
             continue;
         }
@@ -162,8 +167,8 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
         }) else {
             warnings.report(Issue::warning(
                 span.staff, Some(Object::Span(span_index)), Some(span.start[0]),
-                "Zu viele ueberlappende Boegen; Symbol wird ausgelassen.",
-                "Doppelte Bögen löschen oder ihre Anker korrigieren; MusicXML erlaubt hier höchstens 16 gleichzeitige Bögen.",
+                crate::i18n::tr("Too many overlapping slurs/ties; symbol omitted."),
+                crate::i18n::tr("Delete duplicate slurs/ties or correct their anchors; MusicXML permits at most 16 simultaneous slurs/ties here."),
             ));
             continue;
         };
@@ -209,11 +214,13 @@ fn wedge_endpoints(
                 staff_index,
                 Some(Object::Span(span_index)),
                 Some(span.start[0]),
-                format!(
-                    "{} ohne Noten oder Pausen; wird ausgelassen.",
-                    span.kind.label()
+                crate::i18n::format(
+                    "{0} without notes or rests; omitted.",
+                    &[("0", span.kind.label().to_string())],
                 ),
-                "Fehlende Noten/Pausen im System ergänzen oder die Dynamikgabel löschen.",
+                crate::i18n::tr(
+                    "Add missing notes/rests in the staff or delete the dynamic wedge.",
+                ),
             ));
             continue;
         }
@@ -224,8 +231,8 @@ fn wedge_endpoints(
         }) else {
             warnings.report(Issue::warning(
                 staff_index, Some(Object::Span(span_index)), Some(span.start[0]),
-                "Zu viele ueberlappende Gabeln; Symbol wird ausgelassen.",
-                "Doppelte Dynamikgabeln löschen oder ihre Länge korrigieren; höchstens 16 dürfen gleichzeitig laufen.",
+                crate::i18n::tr("Too many overlapping wedges; symbol omitted."),
+                crate::i18n::tr("Delete duplicate dynamic wedges or correct their length; at most 16 may overlap."),
             ));
             continue;
         };
@@ -511,14 +518,21 @@ fn combine_pages(pages: &[&Score], inspection: bool) -> Result<CombinedPages, St
     let mut order = Vec::new();
     let mut page_starts = std::collections::HashSet::new();
     for (index, page) in pages.iter().enumerate() {
-        page.validate()
-            .map_err(|error| format!("Seite {}: {error}", index + 1))?;
+        page.validate().map_err(|error| {
+            crate::i18n::format(
+                "Page {0}: {error}",
+                &[
+                    ("0", format!("{}", index + 1)),
+                    ("error", error.to_string()),
+                ],
+            )
+        })?;
         if !inspection
             && (page.staves.is_empty() || (page.notes.is_empty() && page.rests.is_empty()))
         {
-            return Err(format!(
-                "Seite {}: Keine Noten oder Pausen zum Exportieren vorhanden.",
-                index + 1
+            return Err(crate::i18n::format(
+                "Page {0}: No notes or rests available for export.",
+                &[("0", format!("{}", index + 1))],
             ));
         }
         let offset = combined.staves.len();
@@ -564,7 +578,7 @@ pub(crate) fn inspect_pages(pages: &[&Score]) -> Vec<Issue> {
         if score.staves.is_empty() || (score.notes.is_empty() && score.rests.is_empty()) {
             issues.push(Issue::error(
                 page,
-                "Keine Noten oder Pausen zum Exportieren vorhanden.".into(),
+                crate::i18n::tr("No notes or rests available for export.").into(),
             ));
         }
         valid.push((page, *score));
@@ -618,26 +632,28 @@ pub(crate) fn inspect_pages(pages: &[&Score]) -> Vec<Issue> {
             ($field:ident, $variant:ident, $position:expr, $label:expr) => {
                 for (index, object) in score.$field.iter().enumerate().filter(|(_, object)| !object.confirmed) {
                     let mut issue = Issue::warning(object.staff, Some(Object::$variant(index)),
-                        Some(($position)(object)), format!("{} noch ungeprüft.", ($label)(object)),
-                        "Erkennung mit dem Scan vergleichen, gegebenenfalls korrigieren und im Bereich Korrektur als Geprüft bestätigen.");
+                        Some(($position)(object)), crate::i18n::format("{0} not yet reviewed.", &[("0", format!("{}", ($label)(object)))]),
+                        crate::i18n::tr("Compare recognition with the scan, correct if necessary and mark as Reviewed in the Correction panel."));
                     issue.page = page;
                     issue.severity = Severity::Review;
                     issues.push(issue);
                 }
             };
         }
-        review!(notes, Note, |n: &Note| n.x, |_: &Note| "Note");
+        review!(notes, Note, |n: &Note| n.x, |_: &Note| crate::i18n::tr(
+            "Note"
+        ));
         review!(
             rests,
             Rest,
             |r: &crate::model::Rest| r.x,
-            |_: &crate::model::Rest| "Pause"
+            |_: &crate::model::Rest| crate::i18n::tr("Rest")
         );
         review!(
             barlines,
             Barline,
             |b: &crate::model::Barline| b.x,
-            |_: &crate::model::Barline| "Taktstrich"
+            |_: &crate::model::Barline| crate::i18n::tr("Barline")
         );
         review!(
             spans,
@@ -649,19 +665,19 @@ pub(crate) fn inspect_pages(pages: &[&Score]) -> Vec<Issue> {
             key_changes,
             KeyChange,
             |c: &crate::model::KeyChange| c.x,
-            |_: &crate::model::KeyChange| "Tonartwechsel"
+            |_: &crate::model::KeyChange| crate::i18n::tr("Key change")
         );
         review!(
             time_changes,
             TimeChange,
             |c: &crate::model::TimeChange| c.x,
-            |_: &crate::model::TimeChange| "Taktwechsel"
+            |_: &crate::model::TimeChange| crate::i18n::tr("Time change")
         );
         review!(
             dynamics,
             Dynamic,
             |d: &crate::model::Dynamic| d.x,
-            |_: &crate::model::Dynamic| "Dynamikangabe"
+            |_: &crate::model::Dynamic| crate::i18n::tr("Dynamic marking")
         );
         review!(
             repeat_marks,
@@ -707,12 +723,12 @@ fn export_ordered(
     score.validate()?;
     let divisions = score.rhythm_divisions();
     if title.chars().any(|character| !matches!(character, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')) {
-        return Err("Der Titel enthaelt ungueltige XML-Zeichen.".into());
+        return Err(crate::i18n::tr("The title contains invalid XML characters.").into());
     }
     if !inspection
         && (score.staves.is_empty() || (score.notes.is_empty() && score.rests.is_empty()))
     {
-        return Err("Keine Noten oder Pausen zum Exportieren vorhanden.".into());
+        return Err(crate::i18n::tr("No notes or rests available for export.").into());
     }
     let mut xml = Xml((!inspection).then(|| Writer::new(Vec::new())));
     if let Some(writer) = &mut xml.0 {
@@ -763,8 +779,9 @@ fn export_ordered(
             .filter(|mark| !mark.confirmed)
             .count();
     if unchecked > 0 {
-        warnings.messages.push(format!(
-            "{unchecked} ungepruefte Objekte werden mit exportiert."
+        warnings.messages.push(crate::i18n::format(
+            "{unchecked} unreviewed objects will also be exported.",
+            &[("unchecked", format!("{}", unchecked))],
         ));
     }
     let mut number = 1_u32;
@@ -895,21 +912,36 @@ fn export_ordered(
                 staff_index,
                 None,
                 Some(staff.left),
-                "Keine erste Taktangabe: 4/4 angenommen.",
-                "Unter Systemangaben die erste Taktart setzen; Notenwerte und Taktwechsel prüfen.",
+                crate::i18n::tr("No initial time signature: assuming 4/4."),
+                crate::i18n::tr("Set the initial time signature under Staff information; check note values and time changes."),
             ));
         }
         if first && staff.header.key_signature.is_none() {
             warnings.report(Issue::warning(staff_index, None, Some(staff.left),
-                "Keine erste Vorzeichnung erkannt; gespeicherte Tonhoehen werden unveraendert exportiert.",
-                "Unter Systemangaben die Vorzeichnung setzen, auch C-Dur / a-Moll ausdrücklich angeben."));
+                crate::i18n::tr("No initial key signature recognized; stored pitches are exported unchanged."),
+                crate::i18n::tr("Set the key signature under Staff information, explicitly including C major / A minor.")));
         }
         if staff.header.clef == Clef::Unknown {
-            warnings.report(Issue::warning(staff_index, None, Some(staff.left),
-                format!("Unbekannter Schluessel, {}.", if clef.is_some() {
-                    "vorheriger Schluessel beibehalten"
-                } else { "Violin-Annahme" }),
-                "Unter Systemangaben den Schlüssel setzen und die daraus abgeleiteten Tonhöhen prüfen."));
+            warnings.report(Issue::warning(
+                staff_index,
+                None,
+                Some(staff.left),
+                crate::i18n::format(
+                    "Unknown clef, {0}.",
+                    &[(
+                        "0",
+                        (if clef.is_some() {
+                            crate::i18n::tr("keeping previous clef")
+                        } else {
+                            crate::i18n::tr("assuming treble")
+                        })
+                        .to_string(),
+                    )],
+                ),
+                crate::i18n::tr(
+                    "Set the clef under Staff information and check the resulting pitches.",
+                ),
+            ));
         }
         if let Some(time) = staff.header.time_signature {
             meter = time;
@@ -936,8 +968,8 @@ fn export_ordered(
                 || start >= stop
             {
                 warnings.report(Issue::warning(staff_index, Some(Object::RepeatMark(mark_index)), Some(mark.x),
-                    "Voltenklammer ohne sichere Nummer/Taktgrenzen; wird ausgelassen.",
-                    "Durchlaufnummern eintragen und Anfang/Ende an Taktgrenzen setzen (Toleranz: zwei Linienabstände)."));
+                    crate::i18n::tr("Volta bracket without reliable number/measure boundaries; omitted."),
+                    crate::i18n::tr("Enter ending numbers and place start/end at measure boundaries (tolerance: two line spacings).")));
                 continue;
             }
             ending_starts.push((start, mark));
@@ -1021,9 +1053,9 @@ fn export_ordered(
                         .count()
                         != 1)
             {
-                let message = format!(
-                    "System {}: Mehrtaktpause und weitere Noten/Pausen im selben Takt. Bitte Taktstriche korrigieren.",
-                    staff_index + 1
+                let message = crate::i18n::format(
+                    "Staff {0}: Multimeasure rest and other notes/rests in the same measure. Please correct barlines.",
+                    &[("0", format!("{}", staff_index + 1))],
                 );
                 if !inspection {
                     return Err(message);
@@ -1036,8 +1068,12 @@ fn export_ordered(
                     staff_index,
                     rest.map(Object::Rest),
                     Some(measure_left),
-                    "Mehrtaktpause und weitere Noten/Pausen im selben Takt; Export blockiert.",
-                    "Taktgrenzen korrigieren oder falsch erkannte Noten/Pausen löschen. Eine Mehrtaktpause muss allein im Takt stehen.",
+                    crate::i18n::tr(
+                        "Multimeasure rest and other notes/rests in the same measure; export blocked.",
+                    ),
+                    crate::i18n::tr(
+                        "Correct measure boundaries or delete incorrectly recognized notes/rests. A multimeasure rest must be alone in its measure.",
+                    ),
                 );
                 issue.severity = Severity::Error;
                 issue.measure = Some(number);
@@ -1253,17 +1289,34 @@ fn export_ordered(
                         staff_index,
                         None,
                         Some(measure_left),
-                        format!(
-                            "Takt {number}: Dauer {} statt {} ({}); Notenwerte/Taktgrenzen pruefen.",
-                            crate::rhythm::duration_fraction(elapsed, divisions),
-                            crate::rhythm::duration_fraction(measure_duration, divisions),
-                            if elapsed < measure_duration {
-                                "zu kurz"
-                            } else {
-                                "zu lang"
-                            },
+                        crate::i18n::format(
+                            "Measure {number}: duration {0} instead of {1} ({2}); check note values/measure boundaries.",
+                            &[
+                                ("number", format!("{}", number)),
+                                (
+                                    "0",
+                                    crate::rhythm::duration_fraction(elapsed, divisions)
+                                        .to_string(),
+                                ),
+                                (
+                                    "1",
+                                    crate::rhythm::duration_fraction(measure_duration, divisions)
+                                        .to_string(),
+                                ),
+                                (
+                                    "2",
+                                    (if elapsed < measure_duration {
+                                        crate::i18n::tr("too short")
+                                    } else {
+                                        crate::i18n::tr("too long")
+                                    })
+                                    .to_string(),
+                                ),
+                            ],
                         ),
-                        "Notenwerte, Pausen, Punktierungen, n-Tolen, Akkorde und Taktstriche prüfen. Ein Auftakt kann absichtlich kürzer sein.",
+                        crate::i18n::tr(
+                            "Check note values, rests, dots, tuplets, chords and barlines. A pickup may be intentionally shorter.",
+                        ),
                     );
                     issue.measure = Some(number);
                     warnings.report(issue);
@@ -1311,8 +1364,8 @@ fn export_ordered(
             bar.staff,
             Some(Object::Barline(index)),
             Some(bar.x),
-            "Wiederholungsanfang ohne nachfolgenden Takt.",
-            "Taktstrichtyp prüfen oder fehlende Takte auf einer weiteren Seite ergänzen.",
+            crate::i18n::tr("Repeat start without a following measure."),
+            crate::i18n::tr("Check the barline type or add missing measures on another page."),
         ));
     }
     xml.end("part");

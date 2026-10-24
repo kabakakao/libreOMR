@@ -1,485 +1,284 @@
-# Entwicklung und technische Hintergründe
+# Development and technical background
 
-Diese Dokumentation enthält Architektur, Erkennungsgrenzen und lokale
-Regressionstests. Alle Shell-Beispiele werden im Projekt-Hauptordner ausgeführt.
-Die Anleitung zur Nutzung steht in der [README](../README.md).
-Artefakte, Versionierung und der Ablauf zum Veröffentlichen stehen unter
-[Builds und Releases](releases.md).
+This document covers architecture, recognition limitations and local regression
+tests. Run shell examples from the project root. See the [README](../README.md)
+for usage and [Builds and releases](releases.md) for artifacts and publishing.
+Language files and user preferences are described in [Localization](localization.md).
 
-## CI-Laufzeiten
+## CI runtime
 
-Die Bild- und Vorlagenvergleiche benötigen auch optimierte Abhängigkeiten.
-Der Workflow verwendet deshalb das Profil `ci` mit `opt-level = 2` für Tests
-und Builds. Im eigenen Projektcode bleiben Debug-Assertions und
-Überlaufprüfungen aktiv; Abhängigkeiten verwenden dafür die Release-Einstellungen.
-Reduzierte Debug-Informationen und deaktivierte inkrementelle Kompilierung begrenzen
-Build- und Cache-Größe. Lokal lässt sich derselbe Lauf so ausführen:
+Image and template matching require optimized dependencies. The workflow uses
+the `ci` profile with `opt-level = 2` for tests and builds. Project code keeps
+debug assertions and overflow checks enabled; dependencies use release settings
+for those checks. Reduced debug information and disabled incremental compilation
+limit build and cache size. Run the same checks locally with:
 
 ```sh
 cargo test --profile ci --locked
 cargo build --profile ci --locked
 ```
 
-Alle Rust-Tests und Binärdateien werden weiterhin auf Linux, Windows (x86_64 und ARM64) und
-macOS mit Apple Silicon geprüft. Formatierung, Clippy und die Python-Tests laufen einmal im
-separaten Linux-Job; dort wird auch der Benchmark ohne Desktop-Features geprüft.
-Abhängigkeiten werden pro Job/Plattform zwischengespeichert, auch bei einem
-fehlgeschlagenen Lauf. Der erste Build mit einem neuen Profil benötigt einen
-neuen Cache.
+All Rust tests and binaries are checked on Linux, Windows x86_64 and ARM64, and
+macOS Apple Silicon. Formatting, Clippy, Python tests and the benchmark without
+desktop features run once in a separate Linux job. Dependencies are cached per
+job/platform, including failed runs. A new profile initially needs a new cache.
 
-Die Matrix trennt das Kompilieren der Tests von ihrer Ausführung, damit die
-Laufzeit beider Schritte erkennbar ist. Für Kompilierung und Testausführung
-gelten Grenzen von 30 bzw. 10 Minuten; der gesamte Matrix-Job ist auf 45 Minuten
-begrenzt. Neue Läufe derselben Git-Referenz brechen ältere Läufe ab.
-Nach erfolgreichen regulären Builds werden Entwicklungsartefakte für 14 Tage
-hochgeladen. Release-Tags verwenden die CI als wiederverwendbaren Workflow;
-deren Veröffentlichung ist im separaten Release-Workflow vorbereitet.
+The matrix separates test compilation from execution, with limits of 30 and
+10 minutes respectively and a 45-minute job limit. A new run cancels older runs
+for the same Git ref. Successful regular builds upload development artifacts
+for 14 days. Release tags reuse CI and prepare publication in a separate workflow.
 
-## Gemeinfreies Regressionsbeispiel
+## Public-domain regression example
 
-Die [Partita BWV 1013](../examples/public-domain/README.md) ist zugleich ein
-öffentlicher Regressionstest für die Schlüsselerkennung. Der Notensatz enthält
-schmalere Violinschlüssel als die ursprüngliche Bravura-Vorlage. Der Vergleich
-berücksichtigt deshalb weitere Breiten und Höhen. Wenn die normale Suche
-scheitert, folgt ein größerer Ausschnitt mit einer Linienbereinigung, die
-dünne Schlüsselkonturen an den Notenlinien besser erhält. Die Schwellen für
-Trefferqualität und die Unterscheidung von Violin- und Bassschlüsseln bleiben
-erhalten.
+The [BWV 1013 Partita](../examples/public-domain/README.md) is a public clef
+recognition regression. Its treble clefs are narrower than the original Bravura
+template. Matching considers additional widths and heights. If normal matching
+fails, a larger crop and staff-line cleanup preserve thin clef contours better.
+Quality thresholds and treble/bass discrimination remain unchanged.
 
-`cargo test --locked public_bach_partita` prüft alle 64 Schlüssel auf den fünf
-Seiten sowie an der ersten Notenzeile, dass Schlüssel und C-Takt nicht als
-Noten oder Pausen erscheinen und die erste echte Sechzehntelnote erhalten bleibt.
-Diese Tests benötigen keine privaten Scans. Wie die Aufnahmen für die README
-entstehen, steht unter [Screenshots](../assets/screenshots/README.md).
+`cargo test --locked public_bach_partita` checks all 64 clefs across five pages,
+and checks that the first staff's clef and common-time symbol do not become
+notes or rests while the first real sixteenth note is retained. No private scans
+are required. See [Screenshots](../assets/screenshots/README.md) for captures.
 
-## Architektur
+## Architecture
 
-- `src/model.rs`: Noten, Pausen, Taktgrenzen, taktweise Vorzeichengeltung,
-   Systemvorzeichnung, Boegen/Gabeln und versioniertes Projektformat.
-- `src/rhythm.rs`: taktweise Summierung der Notenwerte und Vergleich mit der
-   geltenden Taktart fuer die Validitaetsanzeige im Scan und in der Vorschau.
-- `src/recognition.rs`: vorsichtige Scan-Ausrichtung, Binarisierung und Zusammenhangskomponenten mit
-   `imageproc`, Linien-/Hilfslinienpruefung, Taktstriche, Hals-/Balkenauswertung, Punktierung
-   und ein generiertes Demobild.
-- `src/symbols.rs`: Kopfvorlagen und Hohlraumpruefung sowie skaliertes Template
-    Matching fuer Systemangaben, Faehnchen und Pausen mit `imageproc`;
-   SMuFL-Vorlagen werden aus der mitgelieferten Bravura-Schrift mit `ab_glyph` erzeugt.
-- `src/app.rs`: native `eframe/egui`-Oberflaeche, Hintergrundverarbeitung,
-  Bild-Overlay, Inspektor, Undo/Redo und lokale Projektdateien.
-- `src/spans.rs`: geometrische Vorschlaege fuer Crescendo-/Decrescendo-Gabeln
-   und Binde-/Halteboegen anhand von Bildkonturen und Notenpaaren.
-- `src/preview.rs`: ausblendbare, zeilenbezogene Notenvorschau aus dem aktuellen
-   Modell mit Bravura-Symbolen, Scrollbereich und Noten-/Pausenauswahl;
-   Vorzeichen als freigestellte Schriftglyphen aus Bravura ohne Hintergrund;
-   gemeinsame Bogen-/Gabeldarstellung fuer Vorschau und Scan-Overlay.
-- `src/document_import.rs`: Seitenermittlung und seitenweiser PDF-/TIFF-/Bildimport;
-   PDF-Rasterung mit `hayro`, 300 dpi, weissem Hintergrund und Bildgroessenpruefung.
-   PDF-Seiten teilen sich ein eingelesenes Dokument, ohne alle Seiten vorab zu rastern.
-- `src/tiff_import.rs`: Auflistung und Auswahl der TIFF-Bildverzeichnisse;
-   Fax3-Fallback mit `hayro-ccitt` und dem Metadatenparser von `tiff`.
-   Andere TIFF-Kompressionen bleiben beim `image`-Decoder, auch auf spaeteren Seiten.
-- `src/image_limits.rs`: gemeinsame Bildgroessenlimits fuer Standard- und Fax3-Import
-   sowie das Wiederherstellen eingebetteter Projektbilder.
-- `src/main.rs`: Einstiegspunkt der Desktop-App.
+- `src/model.rs`: notes, rests, measure boundaries, measure-scoped accidentals,
+  staff key signatures, slurs/ties/wedges and the versioned project format.
+- `src/rhythm.rs`: sums note values per measure and compares them with the active
+  time signature for validity overlays in the scan and preview.
+- `src/recognition.rs`: conservative deskewing, binarization and connected
+  components with `imageproc`, staff/ledger-line checks, barlines, stem/beam
+  analysis, dots and a generated demo image.
+- `src/symbols.rs`: notehead templates and cavity checks, scaled template
+  matching for staff attributes, flags and rests with `imageproc`. SMuFL templates
+  are generated from the bundled Bravura font using `ab_glyph`.
+- `src/app.rs`: native `eframe/egui` UI, background processing, image overlay,
+  inspector, undo/redo and local project files.
+- `src/app/problems.rs`: cached export diagnostics and navigation to corrections.
+- `src/i18n.rs` and `locales/*.json`: embedded translations, locale resolution,
+  English fallback and named-placeholder substitution.
+- `src/settings.rs`: per-user language/theme preferences, atomic persistence
+  and the Settings window.
+- `src/spans.rs`: geometric proposals for crescendo/decrescendo wedges and
+  slurs/ties based on image contours and note pairs.
+- `src/preview.rs`: optional staff-based preview of the current model with
+  Bravura symbols, scrolling and note/rest selection; transparent accidental
+  glyphs and shared slur/tie/wedge drawing for preview and scan overlay.
+- `src/document_import.rs`: page discovery and page-by-page PDF/TIFF/image import;
+  PDF rasterization with `hayro` at 300 dpi on white, with image-size validation.
+  PDF pages share one loaded document without rasterizing all pages up front.
+- `src/tiff_import.rs`: TIFF image-directory enumeration and selection, with a
+  Fax3 fallback using `hayro-ccitt` and `tiff` metadata. Other compression types
+  continue to use the `image` decoder, including on later pages.
+- `src/image_limits.rs`: shared image limits for normal/Fax3 import and embedded
+  project-image restoration.
+- `src/main.rs`: desktop entry point.
 
-Die Trennung erlaubt spaeter, die heuristische Erkennung durch einen
-Rust-kompatiblen Modellrunner (z. B. ONNX) zu ersetzen, ohne den Korrektureditor
-neu zu schreiben. Dafuer muessen Modell, Symbolvokabular, Lizenz und Datensatz
-zuerst ausgewertet werden. Es sind derzeit keine Modellgewichte enthalten.
+This separation allows a future Rust-compatible model runner, such as ONNX,
+to replace heuristic recognition without rewriting the correction editor.
+Model, vocabulary, license and dataset must be evaluated first. No model weights
+are currently included.
 
-Die unveraenderte Bravura-Schrift stammt aus
-[steinbergmedia/bravura, Commit 37b1943](https://github.com/steinbergmedia/bravura/tree/37b194378b710cc40e406ab6c4b07608bb9548ae)
-und steht unter SIL Open Font License 1.1. Die mitgelieferte Lizenz steht in
-[assets/Bravura-LICENSE.txt](../assets/Bravura-LICENSE.txt) und muss bei Weitergabe
-der Schrift bzw. eines Pakets mit dieser Schrift mitgeliefert werden. Fuer die
-Vorlagen werden keine Ausschnitte einer Benutzerpartitur gespeichert.
+The unmodified Bravura font comes from
+[steinbergmedia/bravura, commit 37b1943](https://github.com/steinbergmedia/bravura/tree/37b194378b710cc40e406ab6c4b07608bb9548ae)
+under SIL Open Font License 1.1. Include
+[assets/Bravura-LICENSE.txt](../assets/Bravura-LICENSE.txt) when distributing the
+font or a package containing it. Templates do not store crops from user scores.
 
-## Grenzen und naechste Schritte
+## Limitations and next steps
 
-Die Baseline kann mit schiefen Scans, kurzen Systemen, dicht ueberlagerten
-Balken, Akkorden, beschaedigten/offenen Ringkonturen, Text und Symbolen scheitern
-oder falsche Noten erzeugen. Getrennte Koepfe an einem gemeinsamen Hals werden
-gesucht, aber noch nicht als Akkord oder mehreren Stimmen zugeordnet.
-Die Vorschau zeigt den Modellstand, keine validierte Neusetzung der Partitur.
-Abstaende werden fuer die Lesbarkeit angepasst; kurze Noten von 1/8 bis 1/64 erscheinen
-mit Faehnchen statt rekonstruierter Balkengruppen. Stimmen, rhythmische
-Vollstaendigkeit und eine vollstaendige Notensatz-/Umbruchlogik fehlen weiterhin.
-Sie setzt mindestens etwa 45 % Bildbreite fuer Notenlinien voraus. Die neue
-Schluesselerkennung ist auf den Anfang jedes Systems begrenzt und kann
-bei anderen Notenschriften oder beschaedigten Zeichen scheitern. Zu schwache
-oder mehrdeutige Vorlagentreffer bleiben unbekannt; Fehlklassifikationen bleiben
-trotzdem moeglich. Die Vorschau und der MusicXML-Export fuehren die Taktart
-bis zur naechsten gedruckten oder manuell ergaenzten Taktangabe fort. Das Modell
-behandelt die Systeme als fortlaufende Stimme; eine Instrument-/Stimmen-Zuordnung
-fehlt. Vorzeichnungen werden nicht zwischen Systemen uebertragen. Eine leere
-Vorzeichnung wird nur bei einer beobachteten freien Luecke zwischen erkanntem
-Schluessel und Taktzeichen bestaetigt; sonst bleibt sie unbekannt und muss
-gegebenenfalls manuell gesetzt werden.
-Pausenerkennung ist auf gerade, weitgehend isolierte Standardformen beschraenkt;
-Kurze Pausen werden auch bis zu zwei Notenabstaende tiefer gesucht, etwa unter
-einem Balken, und in mehreren Druckgroessen geprueft. Vollstaendige Pausen mit
-mehr Haekchen haben bei vergleichbarer Trefferqualitaet Vorrang vor Teiltreffern
-mit weniger Haekchen. Dadurch werden Sechzehntelpausen nicht auf ihren
-Achtel-Teil reduziert.
-Punktierte Pausen und eine mehrstimmige rhythmische Zuordnung sind nicht modelliert.
-Mehrtaktpausen benoetigen einen mittigen langen Balken, zwei Endstriche und
-eine lesbare, zentrierte Zahl von 2 bis 99 darueber. Andere Formen, fehlende
-Zahlen und eine automatische zeitliche Aufteilung der pausierten Takte
-sind nicht implementiert. Die Zahlenerkennung ist heuristisch und korrigierbar.
-Sehr kurze Scanluecken im Balken (bis 0,08 Notenabstaende) werden ueberbrueckt;
-groessere Unterbrechungen bleiben ausgeschlossen. Pausenzahlen benoetigen eine
-vollstaendige Kontur; Mehrlochformen werden zusaetzlich ueber ihre Innenflaechen
-geprueft. Die Mindestqualitaet des Vorlagenvergleichs bleibt unveraendert.
-Die automatische Triolenerkennung ist auf pausenfreie Dreiergruppen gleicher
-Grundwerte mit gemeinsamem Balken und sichtbarer 3 beschraenkt. Triolenklammern,
-gemischte Werte, punktierte Triolentoene und sonstige N-Tolen werden nicht
-automatisch zugeordnet. Werte kuerzer als Vierundsechzigstel und die
-zeitliche Takt-/Stimmenzuordnung sind weiterhin nicht implementiert.
-Gabeln und Boegen werden heuristisch und noch nicht vollstaendig erkannt.
-Boegen zwischen unmittelbar benachbarten, gleich hohen Noten mit gleichem
-Vorzeichen und ohne Pause dazwischen werden als Haltebogen vorgeschlagen;
-die musikalisch mehrdeutige Typzuordnung bleibt manuell korrigierbar.
-Verschachtelte, stark ueberlagerte und zeilenuebergreifende Boegen sowie
-Stimmenzuordnung sind nicht gezielt unterstuetzt. Text wie `cresc.`/`dim.`
-wird nicht gelesen. Die Symbole speichern Bildkoordinaten, keine festen
-Notenverknuepfungen: Nach Notenkorrekturen ihre Endpunkte ebenfalls pruefen.
-Eine Haltebogen-Wiedergabe oder rhythmische Zusammenfassung ist nicht implementiert.
-Artikulationen werden anhand von Form, Groesse und Bravura-Vorlagen in der
-Nahe einer Notenachse gesucht. Getrennte Bestandteile von Fermaten und
-kombinierten Zeichen werden gemeinsam verglichen. Die Linienbereinigung
-prueft echte durchgehende Linien, damit kopfnahe Zeichen erhalten bleiben.
-Ueberlagerungen mit Haelsen oder Boegen, sehr nahe Taktstriche, Text und
-abweichende Notenschriften koennen weiterhin zu fehlenden oder falschen
-Vorschlaegen fuehren. Pro Note gibt es eine Artikulationsauswahl; diese enthaelt
-auch die oben genannten Kombinationen. Eine Stimmenzuordnung fehlt.
-Dynamikbuchstaben muessen weitgehend isoliert ober- oder unterhalb des Systems
-stehen (Suchbereich sechs Notenabstaende). Zusammenhaengende Buchstabengruppen
-werden als Ganzes verglichen, um etwa pp nicht auf p zu verkuerzen. Textzusatz,
-Kollisionen, starke Beschaedigungen und andere Schriften koennen die Erkennung
-verhindern. Die Zuordnung zwischen zwei Systemen beruecksichtigt den Abstand zum
-Systemrand mit Vorrang fuer die uebliche Position unterhalb eines Systems. Die Vorschlaege bleiben ungeprueft. MusicXML ordnet Dynamikangaben
-anhand ihrer horizontalen Position im bestehenden Einzelstimmenmodell ein;
-eine unabhaengige rhythmische Zeitrekonstruktion entsteht dadurch nicht.
-Schluesselwechsel innerhalb einer Zeile fehlen noch. Gedruckte Taktwechsel
-werden nach erkannten Taktstrichen sowie am Zeilenanfang gesucht. Unterstuetzt
-sind C, Alla breve und Zahlentakte mit Zaehlern von 1 bis 32 und Nennern
-1, 2, 4, 8, 16 oder 32. Enge Doppelstriche neben einer Taktangabe werden bei
-der Randpruefung beruecksichtigt; weitere Ziffern bleiben ausgeschlossen.
-Suchanker werden auch geprueft, wenn eine Taktziffer zunaechst wie eine Note
-wirkt. Schwache Schluesseltreffer werden zusaetzlich an der lokalen Lage der
-Notenlinien ausgerichtet. Leicht gekruemmte Zeilenenden werden ueber mehrere
-Linien verfolgt, damit dort angekuendigte Taktwechsel nicht abgeschnitten werden.
-Innere Vorzeichnungswechsel werden an erkannten
-Taktgrenzen als kompakte, geordnete Gruppen mit mindestens zwei Zeichen
-vorgeschlagen. Unterstuetzt sind Bes, Kreuze und passende vorangestellte
-Aufloesungsgruppen, auch fuer den Wechsel zu einer Vorzeichnung ohne Zeichen.
-Alle Zeichen muessen zu den Schluesselpositionen passen; Qualitaetsschwellen
-werden dafuer nicht abgesenkt. Einzelzeichen, unvollstaendige Gruppen,
-stark versetzter Druck und Wechsel ohne erkannte Grenze koennen fehlen.
-Einzelne Notenvorzeichen sollen nicht zu Tonartwechseln werden.
-Wechsel gelten nur im jeweiligen System; eine automatische Uebernahme in
-folgende Systeme ohne gedruckte Vorzeichnung ist nicht implementiert.
-Taktgrenzen benoetigen weitgehend durchgehende, gerade senkrechte Striche
-ueber die gesamte Systemhoehe. Unterbrochene, kurze, schraege oder sehr nahe
-an Noten liegende Striche koennen uebersehen werden und sind manuell korrigierbar.
-Die Typzuordnung ist heuristisch: Wiederholungen benoetigen zwei kleine,
-ausgerichtete Punkte an den mittleren Zwischenraeumen; ein einzelner Punkt
-genuegt nicht. Gleich starke Doppelstriche und duenn/dicke Schlussstriche
-werden ueber ihre Strichbreiten unterschieden. Beschaedigte Punkte oder
-uneindeutige Breiten koennen zu Fehlklassifikationen fuehren. Wiederholungs-
-Abspiellogik und Wiederholungsanzahl sind nicht implementiert. Segno/Coda
-verwenden Bravura-Vorlagen einschliesslich aufrechter Druckvarianten.
-Volten benoetigen ein langes, duennes, weitgehend waagerechtes Dach mit linkem
-Abstrich und abgesetzter Beschriftung. Ziffern werden mit Musikschrift-Vorlagen
-verglichen; abweichende Textschriften koennen eine manuelle Nummernkorrektur
-erfordern. Ueber Zeilenumbrueche fortgesetzte Klammern und ausgeschriebene
-Sprunganweisungen wie D.S. al Coda werden noch nicht rekonstruiert.
-Einzelvorzeichen gelten pro System und exakter diatonischer Tonhoehe mit Oktave,
-nicht fuer andere Oktaven oder Systeme. Am Systemanfang wird neu begonnen;
-ueber Zeilenumbrueche geteilte Takte und widerspruechliche gleichzeitige
-Vorzeichen verschiedener Stimmen werden noch nicht aufgeloest.
-Doppelvorzeichen, geklammerte Warnvorzeichen und dicht versetzte Akkordvorzeichen
-sind nicht gezielt unterstuetzt. Die Erkennung kann Zeichen uebersehen oder
-fehlklassifizieren; alle Treffer bleiben ungeprueft.
-Artikulationen sind eine Eigenschaft einer Note; Dynamikangaben sind eigene,
-frei verschiebbare Bildobjekte.
+The baseline may fail or produce false notes on skewed scans, short staves,
+dense beams, chords, damaged/open hollow shapes, text and other symbols.
+Separate heads sharing a stem are detected, but full chord/voice assignment is
+not reconstructed. The preview displays the model rather than validated
+engraving. Spacing is adjusted for readability; eighth through sixty-fourth
+notes use flags instead of reconstructed beam groups. Full voice assignment,
+rhythmic completeness and engraving/line-breaking logic remain incomplete.
 
-Priorisierte Weiterentwicklung:
+Staff detection expects lines spanning at least about 45% of image width.
+Clef recognition is limited to staff starts and can fail with unfamiliar fonts
+or damaged symbols. Weak/ambiguous matches remain unknown, though false
+classifications are still possible. Preview and MusicXML carry the time signature
+forward until another printed or manually inserted signature. Staves form one
+continuous part without instrument/voice assignment. Key signatures are not
+inherited across staves. An empty key signature is confirmed only when a clear
+gap is observed between recognized clef and meter; otherwise it stays unknown.
 
-1. Reale, lizenzierte Testpartituren und messbare Erkennungsmetriken.
-2. Entzerrung, Perspektivkorrektur und Layoutanalyse fuer mehrspaltige Scans.
-3. Symbolerkennung mit geeignetem Modell und unsicheren Kandidaten zur Pruefung.
-4. Erweitertes musikalisches Modell fuer Schluesselwechsel, Tonarten, Takte, Stimmen, Akkorde,
-   mehrstimmige Pausen, semantische Notenverknuepfungen und rhythmische Plausibilitaet.
-5. MusicXML-Export fuer mehrstimmige Partituren ausbauen sowie MIDI-Wiedergabe.
-   Der vorhandene Einzelstimmenexport ersetzt keine Rhythmus-/Stimmenrekonstruktion.
-6. Installierbare Linux-, Windows- und macOS-Pakete.
+Rest recognition targets upright, largely isolated standard shapes. Short rests
+are also searched up to two staff spacings lower and at several print sizes.
+At comparable quality, complete rests with more hooks take precedence over
+partial matches with fewer hooks, preserving sixteenth rests. Automatic dotted-rest
+recognition and polyphonic rhythmic assignment are not implemented.
 
-## Bestehende OMR-Engines
+Multimeasure rests need a centered long bar, two end strokes and a readable
+centered number from 2 to 99 above. Other shapes, missing numbers and automatic
+temporal splitting of the rested measures are not implemented. Number recognition
+is heuristic and editable. Gaps up to 0.08 staff spacings in the bar are bridged;
+larger gaps are rejected. Digits need complete contours; multi-hole shapes also
+have cavity-area checks. Template quality thresholds remain unchanged.
 
-Recherche vom 14.10.2026: In den crates.io-Suchen nach `optical music recognition`
-und `omr` wurde keine etablierte, direkt einsetzbare Rust-OMR-Engine gefunden.
-Das ist keine vollstaendige Marktuebersicht und kein Nachweis, dass es keine gibt.
-Die hier verwendeten Bibliotheken `imageproc` und `ab_glyph` liefern Bildverarbeitung
-und Schriftrasterung, aber keine musikalische OMR-Semantik.
+Automatic triplets are restricted to rest-free groups of three equal base
+values sharing a beam and a visible 3. Bracketed triplets, mixed values, dotted
+triplet notes and other tuplets are not assigned automatically. Values shorter
+than sixty-fourths and full temporal measure/voice reconstruction are absent.
 
-- [Audiveris](https://github.com/Audiveris/audiveris): etablierte OMR-Engine mit
-   interaktiver Korrektur und MusicXML-Export fuer Linux, Windows und macOS;
-   Java, AGPL-3.0. Eine optionale Anbindung waere moeglich, waere aber kein reines
-   Rust-Backend und ist hier nicht implementiert.
-- [homr](https://github.com/liebharc/homr): modellbasierte OMR-Pipeline mit
-   Segmentierung, Transformer und MusicXML-Ausgabe; Python, AGPL-3.0. Die
-   Bildpositionsangaben sind laut Projekt nur angenaehert. Ebenfalls keine
-   direkt einbindbare Rust-Bibliothek.
-- [ort](https://github.com/pykeio/ort): Rust-Schnittstelle fuer ONNX-Inferenz,
-   standardmaessig mit nativer ONNX Runtime; keine OMR-Engine und keine enthaltenen
-   OMR-Gewichte. Ein geeignetes Modell, dessen Lizenz, Symbolvokabular und die
-   Zuordnung der Ausgabe zu editierbaren Bildpositionen muessten gesondert
-   evaluiert werden.
+Wedges and slurs/ties are heuristic and incomplete. Bows between adjacent notes
+with the same pitch and accidental and no intervening rest are proposed as ties;
+ambiguous types remain editable. Nested, heavily overlapping and cross-staff bows
+and voice assignment are not specifically supported. Text such as `cresc.` or
+`dim.` is not read. Symbols store image coordinates rather than fixed note links;
+check endpoints after correcting notes. Tie playback and rhythmic merging are
+not implemented.
 
-Fuer einen leistungsfaehigen Rust-Editor ist ein austauschbares, modellbasiertes
-Erkennungsbackend die naechste sinnvolle Ausbaustufe. Es werden weder Java/Python
-noch ein externer Dienst oder Modellgewichte automatisch installiert.
+Articulations are searched near the note axis using shape, size and Bravura
+templates. Separate fermata components and combined symbols are compared
+together. Cleanup checks actual continuous lines to preserve marks near heads.
+Stem/slur overlap, close barlines, text and unfamiliar fonts can still cause
+missing or false proposals. Each note has one articulation selection, including
+combinations. There is no voice assignment.
 
-## Entwicklung
+Dynamic letters must be largely isolated above/below the staff, within six
+spacings. Connected groups are matched together so `pp` is not reduced to `p`.
+Additional text, collisions, damage and other fonts can prevent recognition.
+Assignment between staves considers distance to the staff edge, preferring the
+usual position below a staff. Proposals remain unreviewed. MusicXML places them
+by horizontal position in the existing single-part model; this does not reconstruct
+independent rhythmic timing.
 
-### Private Testdaten und generierte Dateien
+Clef changes within a staff are not implemented. Printed meter changes are
+searched after detected barlines and at staff starts. Common time, alla breve
+and numeric meters with numerators 1–32 and denominators 1, 2, 4, 8, 16 or 32 are
+supported. Boundary checks account for narrow double bars next to meter signs;
+other digits remain excluded. Anchors are checked even when a meter digit first
+resembles a note. Weak clef matches are realigned to local staff lines, and
+slightly curved row ends are tracked across multiple lines to retain courtesy
+changes at the edge.
 
-Eigene Notenscans und Testpartituren liegen lokal unter `local/scores/`.
-Der gesamte Ordner `local/` ist in `.gitignore` ausgeschlossen und wird auch
-nicht in Cargo-Pakete aufgenommen. Lokale Designnotizen liegen unter
-`local/design/`. Diese Dateien werden nicht mit dem Projekt ausgeliefert.
-Neue private Scans, Exporte und Screenshots ebenfalls unter `local/` ablegen.
-Notenbilder und Musikexporte direkt im Projekt-Hauptordner werden zusaetzlich
-von Git ignoriert.
+Internal key changes are proposed at detected measure boundaries as compact,
+ordered groups with at least two symbols. Flats, sharps and matching leading
+cancellation groups are supported, including changes to zero accidentals.
+Every symbol must match clef-relative positions without relaxed quality
+thresholds. Single symbols, incomplete groups, displaced printing and changes
+without a detected boundary may be missed. Ordinary note accidentals must not
+become key changes. Changes apply only within their staff; automatic inheritance
+into subsequent staves without a printed signature is absent.
 
-Builds, heruntergeladene Benchmark-Datensaetze, Fehlerbilder und generierte
-Berichte bleiben unter `target/`; fertige Release-Archive koennen unter
-`dist/` abgelegt werden. Beide Ordner sind von Git ausgeschlossen. Die
-kompakten Benchmark-Zusammenfassungen unter `benchmarks/` bleiben versioniert.
-`Cargo.lock`, die benoetigten Bilder/Schrift samt Lizenz unter `assets/` und
-die selbst erzeugte PDF unter `tests/fixtures/` gehoeren zum Projekt.
+Barlines need largely continuous, straight vertical strokes across the full staff
+height. Broken, short, skewed or note-adjacent strokes may be missed and are
+editable. Repeat classification requires two small aligned dots in the middle
+spaces; one dot is insufficient. Stroke widths distinguish equal double bars
+from thin/thick final bars. Damaged dots and ambiguous widths may misclassify.
+Repeat playback and repeat counts are not implemented.
 
-Die normalen Tests und die GitHub-CI benoetigen keine privaten Noten.
-Fuer die optionalen Originaltests die unten gezeigten `LIBREOMR_*`-Variablen
-auf die Dateien unter `local/scores/` setzen. Ein Beispiel:
+Segno/coda use Bravura templates, including upright print variants. Voltas need
+a long, thin, nearly horizontal roof, a left downstroke and detached labeling.
+Digits are matched against music-font templates; other text fonts may need
+manual number corrections. Endings continued across line breaks and written
+jump instructions such as D.S. al Coda are not reconstructed.
+
+Note accidentals apply within a staff at the exact diatonic pitch and octave,
+not to other octaves/staves. Scope resets at each staff start. Measures split
+over rows and conflicting simultaneous accidentals in different voices are not
+resolved. Double accidentals, parenthesized courtesy signs and tightly displaced
+chord accidentals are not specifically supported. Matches may be missed or
+misclassified and remain unreviewed. Articulations belong to notes; dynamics
+are separate freely movable image objects.
+
+Priorities for further development:
+
+1. Real, licensed test scores and measurable recognition metrics.
+2. Dewarping, perspective correction and layout analysis for multicolumn scans.
+3. Model-based symbol recognition with uncertain candidates for review.
+4. A richer model for clef changes, keys, measures, voices, chords, polyphonic
+   rests, semantic note links and rhythmic plausibility.
+5. Polyphonic MusicXML export and MIDI playback. Current single-part export
+   does not replace rhythmic/voice reconstruction.
+6. Installable packages for Linux, Windows and macOS.
+
+## Existing OMR engines
+
+Research recorded on October 14, 2026 found no established, directly usable Rust
+OMR engine in crates.io searches for `optical music recognition` and `omr`.
+This is not a complete market survey or proof that none exists. `imageproc` and
+`ab_glyph` provide image processing and font rasterization, without OMR semantics.
+
+- [Audiveris](https://github.com/Audiveris/audiveris): established OMR with
+  interactive correction and MusicXML on Linux, Windows and macOS; Java,
+  AGPL-3.0. An optional integration is possible but would not be a pure Rust
+  backend and is not implemented here.
+- [homr](https://github.com/liebharc/homr): model-based segmentation/transformer
+  pipeline producing MusicXML; Python, AGPL-3.0. The project describes image
+  positions as approximate. It is not a directly embeddable Rust library.
+- [ort](https://github.com/pykeio/ort): Rust ONNX inference interface, normally
+  using native ONNX Runtime. It is not an OMR engine and includes no OMR weights.
+  A suitable model, license, vocabulary and mapping to editable image positions
+  need separate evaluation.
+
+## Optional original-scan regressions
+
+Private/local score scans are not committed. Tests using them are ignored in
+normal runs and need the corresponding environment variables. Commands below
+use macOS/Linux shell syntax; on Windows set variables in PowerShell.
+
+For the Cassiopeia baritone scan, note-value, accidental and triplet tests check
+the original notes, measure-scoped accidental behavior and the second row's
+triplets. Repeat/barline checks distinguish the double bar before measure 38
+and both repeats. The multirest regression checks the eight-measure rest at 38
+without a false note on its digit. Synthetic tests cover counts 2, 3, 5, 7, 8,
+9, 12 and 16 at three scales, short/large bar gaps and missing end strokes/digits.
+Model/editor tests cover old rests without counts, JSON round trips, invalid
+counts and multirest editing with undo/redo at both window sizes.
 
 ```sh
-LIBREOMR_TEST_IMAGE=local/scores/Cassiopeia_-_BaritoneBf-1.tif \
-cargo test --locked external_note_values -- --ignored
+LIBREOMR_TEST_IMAGE=/path/to/Cassiopeia-file.tif cargo test external_double_before_38_and_both_repeats -- --ignored
+LIBREOMR_TEST_IMAGE=/path/to/Cassiopeia-file.tif cargo test external_multimeasure_rest_at_38_is_not_a_note -- --ignored
+LIBREOMR_TEST_IMAGE=/path/to/Cassiopeia-file.tif cargo test external_hairpins_and_bows -- --ignored
 ```
 
-### Automatische Tests
+`external_hairpins_and_bows` checks three wedges, selected bows and four rows
+without proposals, rather than complete bow recognition. Synthetic tests cover
+all four types at three scales, upper/lower bows, and negatives with staff lines,
+beams and diagonal strokes. Tests also cover tie discrimination, old projects,
+JSON, invalid geometry, undo/redo and staff previews at both sizes.
 
-```sh
-cargo test --locked
-cargo fmt --all --check
-cargo clippy --all-targets --locked -- -D warnings
-```
+Known failure in this optional test: the first row's bow near x ≈ 908 is classified
+as a slur rather than a tie because its two notes currently receive different
+pitches. This also occurs without dynamics recognition. The test remains strict
+and fails there; dynamics/articulation changes do not fix that pitch discrepancy.
 
-`cargo test --locked articulation` prueft die oben aufgefuehrten Artikulationen ober- und
-unterhalb von Noten, mehrere Skalierungen, kopfnahe Zeichen, eindeutige
-Notenzuordnung, Fremdformen und JSON-Erhalt. Der separate Test
-`recognizes_staccato_without_confusing_augmentation_dots` grenzt Staccato gegen
-Verlaengerungspunkte ab. Diese synthetischen Tests belegen keine allgemeine
-Erkennungsquote auf Originalpartituren.
-
-`cargo test --locked dynamic` prueft alle zwanzig Dynamikangaben ober- und
-unterhalb eines Systems bei drei Skalierungen, den Ausschluss von Ziffern und
-Artikulationen, die Systemzuordnung, Notenkandidaten, alte Projekte, Validierung,
-JSON-Roundtrip und MusicXML einschliesslich Mehrtaktpausen. Die Oberflaechentests
-pruefen Auswahl und Vorschau aller Dynamiktypen sowie Einfuegen, Verschieben,
-Loeschen und Undo/Redo bei kleinem und grossem Fenster.
-Die Glyphenzuordnung folgt den [SMuFL-Metadaten](https://github.com/w3c/smufl/blob/gh-pages/metadata/glyphnames.json).
-
-Ein lokales Original-TIFF einschliesslich Erkennung pruefen, ohne die Datei als
-permanenten Testdatensatz vorauszusetzen:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zum/scan.tif cargo test imports_external_tiff -- --ignored --nocapture
-```
-
-Der Test ist in normalen Testlaeufen deaktiviert, da er ein vom Benutzer
-bereitgestelltes Bild benoetigt.
-
-Fuer einen lokalen Bassschluessel-Scan mit explizitem C-Takt am ersten System
-prueft eine weitere Regression die erkannten Symboltypen und Positionen sowie
-den Ausschluss dieser Bereiche aus den Notenkandidaten:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zum/scan.tif cargo test recognizes_external_bass_common_time_header -- --ignored --nocapture
-```
-
-Mit dem bereitgestellten Cassiopeia-Scan werden elf Bassschluessel, ein
-C-Takt und in allen elf Systemen ein Kreuz erkannt. Eine weitere lokale
-Regression prueft konkrete Achtel-, Viertel- und Halbpausen und den Ausschluss
-erkannter Pausen aus den Notenkandidaten:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_rests_and_signature -- --ignored --nocapture
-```
-
-Das sind Regressionen fuer diesen Scan, keine allgemeine Qualitaetsmetrik oder
-Vollstaendigkeitsgarantie. Der Scan wird nicht als mitgelieferter Testdatensatz
-vorausgesetzt. Synthetische Tests pruefen alle sieben Pausenwerte bei mehreren
-Skalierungen, Kreuz-/B-Vorzeichnungen und den Vorrang manueller Einzelvorzeichen.
-
-Fuer denselben Scan prueft `external_note_values` konkrete ganze, halbe,
-Viertel-, Achtel- und Sechzehntelnoten, zwei Punktierungen und alle zwoelf Noten
-der ersten Zeile. Die Tempo-Note oberhalb des Systems darf dort nicht als
-Partiturnote erscheinen:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_note_values -- --ignored --nocapture
-```
-
-Die synthetischen Notentests decken offene/gefuellte Koepfe, beide
-Halsrichtungen, mehrere Skalierungen, schraege einfache bis vierfache Balken,
-Faehnchen, gemeinsame Haelse und Punktierungen im Gegensatz zu Staccato ab.
-Weitere optionale Originaltests pruefen alle neun Triolennoten der zweiten
-Zeile sowie genau acht kurze Noten ohne falsche halbe Noten im dritten Takt
-der vierten Zeile:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_triplets_in_second_staff -- --ignored
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_short_notes_do_not_create_half_notes -- --ignored
-```
-
-Offene Koepfe benoetigen neben der hellen Innenflaeche eine passende lokale
-Kopfkontur. So gelten eingeschlossene Zwischenraeume zwischen Noten, Haelsen
-und Balken nicht allein wegen ihrer hellen Flaeche als halbe Noten.
-
-`external_eighth_notes_in_sixth_staff` prueft die beiden einzeln befaehnten
-Achtel der sechsten Zeile ohne zusaetzliche halbe Noten. Geschlossene
-Faehnchen-Hohlraeume am Hals eines gefuellten Kopfes werden vor der
-Balkenauswertung ausgeschlossen. `external_note_accidentals` prueft sechs
-konkrete B-/Aufloesungszeichen in den letzten beiden Zeilen einschliesslich
-JSON-Roundtrip und keine erfundenen Einzelvorzeichen in den ersten neun Zeilen:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_eighth_notes_in_sixth_staff -- --ignored
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_note_accidentals -- --ignored
-```
-
-`external_eighth_in_tenth_staff_is_not_duplicated` prueft exakt vier echte
-Noten im vorletzten Takt der zehnten Zeile, insbesondere die Achtel
-ohne zusaetzliche halbe Note. Die Hohlraumpruefung beruecksichtigt auch den
-Halsbereich eines gefuellten Kopfes, wenn die aeussere Faehnchenkontur selbst
-faelschlich als entgegengesetzt gerichteter Hals erkannt wird:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_eighth_in_tenth_staff_is_not_duplicated -- --ignored
-```
-
-Synthetische Einzelvorzeichentests pruefen Kreuz, B, Aufloesung und das Fehlen
-eines Zeichens bei verschiedenen Skalierungen, Linien-/Zwischenraumpositionen
-und beiden Halsrichtungen. Ein freier Rand beim Vorlagenvergleich verhindert,
-dass Balken-/Halsfragmente allein als Vorzeichen gelten. Erkannte Zeichen
-werden nicht als Notenkoepfe oder Balken mitgezaehlt.
-
-`external_barlines_and_accidental_carry` prueft die Anzahl der Taktgrenzen
-in allen elf Zeilen des Originalscans, konkrete Grenzen der zehnten Zeile
-sowie die Weitergeltung von B und Aufloesungszeichen an nachfolgende Noten:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_barlines_and_accidental_carry -- --ignored
-```
-
-Synthetische Tests unterscheiden Taktstriche von langen Notenhaelsen und
-fassen Doppelstriche bei mehreren Skalierungen zusammen. Modelltests pruefen
-Taktwechsel, Oktav-/Systemtrennung, neue explizite Zeichen, geaenderte oder
-entfernte Grenzen, Loeschen einer Vorzeichennote und JSON-Roundtrip.
-Ein simulierter Editor-Klicktest prueft Taktstrich-Loeschen mit sofortiger
-Vorzeichenaktualisierung und Undo/Redo bei 760 x 520 und 1280 x 820 Pixeln.
-Die Typentests pruefen alle sechs Formen bei drei Skalierungen, einzelne
-Stoerpunkte und notenkopfaehnliche Flecken als Negativfaelle. Der Originaltest
-prueft zusaetzlich das Wiederholungsende am Ende des Scans. Ein weiterer Klicktest
-waehlt alle Typen im kleinen und grossen Fenster und prueft jeweils
-JSON-Roundtrip sowie Undo/Redo. Alte Taktstriche ohne Typfeld bleiben lesbar.
-
-`external_double_before_38_and_both_repeats` prueft den Doppelstrich vor Takt 38
-ohne falsche Note auf der Taktzahl sowie den Wiederholungsanfang vor Takt 54
-und das Wiederholungsende. Abgesetzte Ziffernkoepfe ober-/unterhalb des Systems
-duerfen echte Taktstriche nicht blockieren; verbundene Notenhaelse bleiben
-ausgeschlossen. Die Punktpruefung beruecksichtigt auch groessere, eng am Strich
-gedruckte Wiederholungspunkte, verlangt aber weiterhin zwei ausgerichtete,
-runde Komponenten:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_double_before_38_and_both_repeats -- --ignored
-```
-
-`external_multimeasure_rest_at_38_is_not_a_note` prueft die Acht-Takte-Pause
-ab Takt 38 ohne Notenvorschlag auf der Ziffer. Synthetische Tests pruefen
-2, 3, 5, 7, 8, 9, 12 und 16 Takte bei drei Skalierungen sowie kurze/grosse
-Balkenluecken und fehlende Endstriche/Zahlen.
-Modell- und Editor-Tests pruefen alte Pausen ohne Taktanzahl, JSON-Roundtrip,
-ungueltige Zahlen sowie die Mehrtaktpausensteuerung mit Undo/Redo bei beiden
-Fenstergroessen:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_multimeasure_rest_at_38_is_not_a_note -- --ignored
-```
-
-`external_hairpins_and_bows` prueft die drei Gabeln und ausgewaehlte Boegen
-im Originalscan sowie vier Zeilen ohne Bogen-/Gabelvorschlaege. Es ist kein
-Nachweis vollstaendiger Erkennung aller Boegen auf der Seite. Synthetische Tests
-decken alle vier Typen bei drei Skalierungen, obere/untere Boegen und Negative
-mit Linien, Balken und einzelnen Schraegstrichen ab. Weitere Tests pruefen
-Haltebogen-Abgrenzung, alte Projekte, JSON-Roundtrip, ungueltige Geometrie,
-Editoraktionen mit Undo/Redo und die zeilenbezogene Vorschau bei beiden Fenstergroessen:
-
-```sh
-LIBREOMR_TEST_IMAGE=/pfad/zur/Cassiopeia-Datei.tif cargo test external_hairpins_and_bows -- --ignored
-```
-
-Bekannte Abweichung in diesem optionalen Test: Der Bogen der ersten Zeile bei
-x ~ 908 wird als Bindebogen statt als Haltebogen klassifiziert, weil die beiden
-Noten derzeit unterschiedliche Tonhoehen erhalten. Der Fehler tritt auch ohne
-Dynamikerkennung auf; der Test bleibt unveraendert streng und schlaegt an dieser
-Stelle fehl. Die neue Dynamik-/Artikulationserkennung korrigiert diese bestehende
-Tonhoehenabweichung nicht.
-
-Der zweite Scan `Cassiopeia_-_BassCf-1.tif` hat eigene Regressionen fuer die
-tiefer gesetzte Achtelpause nach zwei Achtelnoten in Takt 30, die ausserhalb
-des bisherigen Ausschnitts liegende Decrescendo-Gabel in Takt 37 und die
-Dreitaktpause ab Takt 62 mit minimal unterbrochenem Balken. Weitere synthetische
-Tests pruefen versetzte Achtelpausen und beide Gabelrichtungen fuenf
-Notenabstaende ausserhalb des Systems. Die Gabelsuche umfasst nun sechs
-Notenabstaende ober-/unterhalb; ihre Konturpruefung wurde nicht gelockert.
+`Cassiopeia_-_BassCf-1.tif` has regressions for the lower eighth rest after two
+eighth notes in measure 30, the decrescendo in measure 37 outside the previous
+crop, and the three-measure rest at 62 with a small bar gap. Synthetic tests check
+displaced eighth rests and both wedge directions five spacings outside the
+staff. Wedge search extends six spacings above/below without relaxed contour checks.
 
 ```sh
 LIBREOMR_BASS_TEST_IMAGE=local/scores/Cassiopeia_-_BassCf-1.tif cargo test external_bass_ -- --ignored
 ```
 
-Beim dritten Scan `Atlantic_Avenue_02_Oboe.tif` ragten mehrere Violinschluessel
-links ueber die geschaetzte Systemkante. Der normale Headerausschnitt bleibt
-unveraendert; nur bei unbekanntem Schluessel wird mit 0,75 Notenabstaenden
-zusaetzlichem linken Rand erneut geprueft. Feinere Violinschluessel-Skalen
-schliessen Groessenluecken, ohne die Qualitaetsschwellen abzusenken. Damit werden
-alle zehn Violinschluessel, der anfaengliche 12/8-Takt und die zwei Bes erkannt;
-die erste Zeile hat 17 Noten und 14 Achtelpausen ohne falsche Header-Noten.
-Die fuenf Mehrtaktpausen sind als 4, 8, 8, 8 und 8 Takte abgesichert.
+In `Atlantic_Avenue_02_Oboe.tif`, treble clefs extend beyond the estimated left
+edge. The normal header crop is unchanged; unknown clefs trigger a retry with
+0.75 spacings of extra left margin. Finer treble scales close size gaps without
+lowering thresholds. Tests require all ten treble clefs, initial 12/8 and two
+flats; row one has 17 notes and 14 eighth rests without false header notes. Five
+multirests have counts 4, 8, 8, 8 and 8.
 
-Zusaetzliche gefuellte Schein-Koepfe an Balken-Hals-Verbindungen werden vor
-der Werteanalyse entfernt, wenn zwei entgegengesetzte Halsdeutungen und eine
-lange dicke Balkenfortsetzung sie belegen. Dadurch bleiben die echten Achtel
-erhalten und werden nicht durch die falschen Kopfmasken zu Vierteln. Der
-Originaltest prueft drei solche Stellen sowie die zugehoerigen echten Achtel;
-synthetische Tests pruefen Schluesselueberstand/12-8 bei mehreren Skalierungen
-und Balkenfortsetzungen gegen duenne Linien und einzelne Koepfe.
+False filled heads at beam/stem intersections are removed before duration
+analysis when opposing stem interpretations and a long thick beam continuation
+support rejection. True eighth notes remain and are not reduced to quarters
+by false head masks. The original regression checks three locations and their
+real eighths; synthetic tests cover clef overhang/12-8 at multiple scales and
+beam continuations versus thin lines and isolated heads.
 
-Die vier inneren Tonartwechsel dieses Scans werden als eigene Objekte erkannt:
-in System 3 zu vier Bes, System 5 zu einem B, System 6 zu vier Bes und System 8
-zu zwei Bes. Wechselzeichen einschliesslich der Aufloesungsgruppen werden vor
-der erneuten Notenanalyse ausgeschlossen, damit sie weder Notenkoepfe noch
-gewoehnliche Einzelvorzeichen vortaeuschen. Regressionen pruefen genau diese
-vier Wechsel, ihre Positionen und die folgende Vorzeichengeltung; auf den
-beiden Cassiopeia-Seiten duerfen keine inneren Wechsel entstehen. Synthetische
-Tests decken beide Schluessel, drei Skalierungen, B-/Kreuz-/Null-Vorzeichnungen
-und Gegenbeispiele mit Einzelzeichen, falscher Reihenfolge oder grossen
-Abstaenden ab. Die Tests sind keine vollstaendige Transkription der Seite;
-auch eine vollstaendige musikalische Bogenverknuepfung ist damit nicht geloest.
+The oboe scan has four internal key changes: four flats in staff 3, one flat
+in staff 5, four in staff 6 and two in staff 8. Change symbols, including
+cancellations, are excluded before renewed note analysis so they do not become
+heads or ordinary accidentals. Tests check all four changes, positions and
+following accidental scope. Neither Cassiopeia page may gain internal changes.
+Synthetic tests cover both clefs, three scales, flat/sharp/zero signatures and
+negatives with individual signs, wrong ordering and large gaps. These checks
+do not prove complete transcription or musical bow linking.
 
 ```sh
 LIBREOMR_OBOE_TEST_IMAGE=local/scores/Atlantic_Avenue_02_Oboe.tif \
@@ -487,37 +286,31 @@ LIBREOMR_SAX_TEST_IMAGE=local/scores/Atlantic_Avenue_10_AltoSax2_Es-1.tif \
 cargo test external_atlantic_ -- --ignored
 ```
 
-Bei `Atlantic_Avenue_10_AltoSax2_Es-1.tif` liess die leichte Schraeglage nur vier
-von sieben Systemen erkennen; bei `a_Little_Concert_Suite_-_BaritoneB-1.tif`
-fehlten alle elf. Die Ausrichtung stellt alle sieben beziehungsweise elf Systeme
-mit Notenvorschlaegen wieder her. Die neuen Originaltests pruefen insbesondere
-die oberen Zeilen und die Anfangsangaben: Violinschluessel, 12/8 und ein Kreuz
-beim Altsaxophon sowie Violinschluessel, 4/4 und ein B bei der Suite.
-Synthetische Tests decken beide Drehrichtungen bei drei Groessen, passende
-Notenkoordinaten, unveraenderte gerade/unvollstaendige Seiten und das pixelgenaue
-Laden eingebetteter Projektbilder ab. Das ist kein Nachweis vollstaendig korrekter
-Noten-, Stimmen- oder Bogenrekonstruktion dieser Seiten.
+Skew in the alto-sax scan previously left only four of seven staves detected;
+`a_Little_Concert_Suite_-_BaritoneB-1.tif` lost all eleven. Alignment restores
+seven/eleven staves with note proposals. Tests emphasize upper rows and initial
+attributes: treble, 12/8 and one sharp for saxophone; treble, 4/4 and one flat
+for the suite. Synthetic tests cover both rotation directions at three sizes,
+note coordinates, unchanged straight/incomplete pages and pixel-exact loading
+of project images. This does not prove full note/voice/bow reconstruction.
 
-Der Originaltest fuer `A_Holy_Night_-_BassCf-1.tif` prueft alle zehn Wechsel
-zwischen 2/4 und 4/4, einschliesslich der beiden Ankuendigungen am Zeilenende.
-Alle zwoelf Bassschluessel muessen erkannt werden, vor ihnen darf kein
-Taktstrich stehen. Die echten Doppelstriche vor den Wechseln bleiben erhalten;
-Taktziffern duerfen nicht als Noten erscheinen.
-
-Bei weit auseinanderliegenden Koepfen am gemeinsamen Hals wird die Halsrichtung
-an der Ansatzseite bevorzugt. Dadurch wird der obere Kopf eines gebalkten
-Oktavpaars nicht zum unteren Kopf hin verfolgt und faelschlich als Viertel
-erkannt. Ein Originaltest prueft beide Koepfe aller acht Sechzehntelpaare
-sowie Achtel, punktierte Werte, Viertel und Halbe. Synthetische Tests pruefen
-beide Halsrichtungen und bis zu vier Balken bei drei Bildskalierungen.
-Scheinbare Hohlkoepfe zwischen kurzen Teilbalken und Notenlinien werden vor
-der Balkenzaehlung verworfen. Der erste Takt in System 5 von O Holy Night
-wird damit korrekt als 16/16 statt 17/16 geprueft; der Originaltest prueft
-auch die Akkordgruppierung und Notenwerte im MusicXML-Export.
+For `A_Holy_Night_-_BassCf-1.tif`, tests check all ten 2/4–4/4 changes, including
+both courtesy changes at row ends, all twelve bass clefs and no barline before
+them. True double bars before changes remain and meter digits must not become
+notes. Widely spaced heads sharing a stem prefer the stem direction at the
+attachment side, so the upper head of a beamed octave is not followed toward
+the lower head and misclassified as a quarter. Tests cover both heads of all
+eight sixteenth pairs plus eighths, dotted values, quarters and halves.
+Synthetic tests cover both directions and up to four beams at three scales.
+False hollow heads between short beams and staff lines are rejected before beam
+counting. Staff 5's first measure is checked as 16/16 rather than 17/16, including
+chord grouping and MusicXML durations.
 
 ```sh
 LIBREOMR_HOLY_NIGHT_TEST_IMAGE=local/scores/A_Holy_Night_-_BassCf-1.tif cargo test external_holy_night -- --ignored
 ```
+
+To run the complete suite including local originals:
 
 ```sh
 LIBREOMR_TEST_IMAGE=local/scores/Cassiopeia_-_BaritoneBf-1.tif \
@@ -531,110 +324,98 @@ LIBREOMR_KULTTOUR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \
 cargo test --locked -- --include-ignored
 ```
 
-`external_dynamics_and_marcato` prueft alle neun Dynamikangaben des
-Cassiopeia-Bariton-Scans und das Marcato-Huetchen in Takt 37 sowie Symbolpositionen,
-Notenausschluss und JSON-Erhalt. Die Holy-Night-Regression prueft zusaetzlich
-mf, f, mf und ff an den vier zugehoerigen Systemen. Das ff direkt neben einem
-Akzent der naechsten Zeile bleibt eine eigenstaendige Buchstabengruppe.
+`external_dynamics_and_marcato` checks nine dynamics in the Cassiopeia baritone
+scan and the marcato in measure 37, including positions, note exclusion and JSON.
+Holy Night additionally checks mf, f, mf and ff in the relevant staves; ff next
+to an accent on the next row remains a separate letter group.
 
 ```sh
 LIBREOMR_TEST_IMAGE=local/scores/Cassiopeia_-_BaritoneBf-1.tif cargo test external_dynamics_and_marcato -- --ignored
 ```
 
-Die sechs Originalscans ergaenzen die synthetischen Tests, sind aber kein
-Nachweis fehlerfreier Erkennung beliebiger Partituren.
+The six original scans complement synthetic tests and do not prove error-free
+recognition of arbitrary scores.
 
-Die Regressionstests fuer kurze Notenwerte pruefen 1/32 und 1/64 mit einzelnen
-Faehnchen und schraegen Balken in beiden Halsrichtungen. Pausentests decken
-1/16, 1/32 und 1/64 bei drei Bildskalierungen, drei Druckgroessen und zwei
-vertikalen Positionen ab. MusicXML verwendet 192 Einheiten pro Viertelnote,
-damit auch doppelt punktierte 1/64-Triolen ohne Rundungsverlust exportiert werden.
-Bei manuell zugewiesenen n-Tolen wird die Zeitaufloesung anhand der Verhaeltnisse
-exakt erweitert; auch Septolen werden ohne Rundungsfehler gezaehlt und exportiert.
-Modell-, Rhythmus-, Export- und Oberflaechentests pruefen die neuen Verhaeltnisse,
-Vorschlagsnoten ohne Taktdauer, unabhaengige Kopfgroessen, alte Projekte und Undo/Redo.
+## Other regressions and native rendering
 
-Taktwechseltests pruefen C, Alla breve, 3/4, 6/8, 5/4, 7/8 und 12/8 bei drei
-Bildskalierungen, unvollstaendige oder versetzte Angaben, die Auswahl in der
-Vorschau, Projektrundlauf, Undo/Redo und angepasste MusicXML-Taktlaengen ueber
-Zeilenumbrueche hinweg. Der Oberflaechentest prueft auch lange Bildnamen in
-der oberen Leiste bei schmalen und breiten Fenstern.
+Short-note tests cover 1/32 and 1/64 with isolated flags and slanted beams in
+both stem directions. Rest tests cover 1/16, 1/32 and 1/64 at three image scales,
+three print sizes and two vertical positions. MusicXML uses 192 divisions per
+quarter to represent double-dotted sixty-fourth triplets exactly. Manually
+assigned tuplets extend resolution exactly, including septuplets. Model, rhythm,
+export and UI tests cover ratios, grace notes without measure duration, independent
+head sizes, old projects and undo/redo.
 
-Optionaler nativer Fenstercheck mit Screenshot (grafische Sitzung erforderlich):
-Die Vorschautests pruefen Musikglyphen, Noten-/Pausenauswahl, aktive Zeile,
-Live-Aenderungen, Undo/Redo, Aus-/Einblenden und leere Ergebnisse bei
-760 x 520 und 1280 x 820 Pixeln mit simulierten egui-Eingaben.
-Eine Pixelpruefung kontrolliert ausserdem den sichtbaren Halsanschluss aller
-acht Fahnen fuer Notenwerte von 1/8 bis 1/64, die native Rastergroesse und die Ausrichtung
-von Halslinien bei einfacher, 1,5-facher und doppelter Pixeldichte.
-Weitere Vorschautests pruefen die Halsrichtung auf und neben der Mittellinie
-im Bass-/Violinschluessel sowie identische Schriftproportionen fuer Koepfe,
-Fahnen und Vorzeichen bei diesen drei Pixeldichten.
-Musikglyphen werden aus den Bravura-Schriftkonturen mit tiny-skia als
-transparente Masken in nativer Displayaufloesung gerendert. Das umgeht
-Rasterfehler von ab_glyph_rasterizer bei bestimmten gebrochenen Groessen.
-Eine Regression prueft Transparenz und Deckkraft der tatsaechlichen Pixel,
-einschliesslich der fehlerausloesenden Groesse aus der ersten Zeile von
-`80er_KULTtour_2_-_Bass2Cf.pdf`. Ein optionaler Originaltest prueft auch den
-Wechsel zur zweiten Zeile und zurueck:
+Meter-change tests cover common time, alla breve, 3/4, 6/8, 5/4, 7/8 and 12/8
+at three scales, incomplete/displaced signatures, preview selection, project
+round trips, undo/redo and MusicXML measure lengths across row breaks. UI tests
+also cover long image names at narrow and wide sizes.
+
+Preview tests simulate egui input at 760 × 520 and 1280 × 820, covering glyphs,
+note/rest selection, active staff, live edits, undo/redo, visibility and empty
+results. Pixel checks verify stem attachments for all eight flags from 1/8 to
+1/64, raster size and stem alignment at 1×, 1.5× and 2× density. Additional tests
+check stem direction around the middle line in bass/treble clefs and consistent
+head/flag/accidental proportions. Bravura outlines are rendered with tiny-skia
+as transparent native-resolution masks, avoiding ab_glyph_rasterizer artifacts
+at certain fractional sizes. A regression checks actual pixel transparency and
+opacity, including the size that triggered the artifact in row one of the
+KULTtour PDF. An optional original test switches to row two and back:
 
 ```sh
-LIBREOMR_TEST_PDF=/pfad/zu/80er_KULTtour_2_-_Bass2Cf.pdf cargo test --locked external_pdf_first_staff_accidentals -- --ignored
+LIBREOMR_TEST_PDF=/path/to/80er_KULTtour_2_-_Bass2Cf.pdf cargo test --locked external_pdf_first_staff_accidentals -- --ignored
 ```
+
+Native screenshot checks require a graphical session:
 
 ```sh
-EFRAME_SCREENSHOT_TO=target/native-smoke.png cargo run --locked --features ui-screenshot
-LIBREOMR_COMPACT_SCREENSHOT=1 EFRAME_SCREENSHOT_TO=target/native-compact.png cargo run --locked --features ui-screenshot
-LIBREOMR_SCREENSHOT_THEME=dark EFRAME_SCREENSHOT_TO=target/native-dark.png cargo run --locked --features ui-screenshot
-LIBREOMR_SCREENSHOT_IMAGE=/pfad/zum/scan.tif EFRAME_SCREENSHOT_TO=target/original-scan.png cargo run --locked --features ui-screenshot
-LIBREOMR_PREVIEW_ACCIDENTALS_SCREENSHOT=1 LIBREOMR_SCREENSHOT_THEME=dark EFRAME_SCREENSHOT_TO=target/preview-accidentals.png cargo run --locked --features ui-screenshot
-LIBREOMR_PROBLEMS_SCREENSHOT=1 EFRAME_SCREENSHOT_TO=target/export-problems.png cargo run --locked --features ui-screenshot
+LIBREOMR_SCREENSHOT_TO=target/native-smoke.png cargo run --locked --features ui-screenshot
+LIBREOMR_COMPACT_SCREENSHOT=1 LIBREOMR_SCREENSHOT_TO=target/native-compact.png cargo run --locked --features ui-screenshot
+LIBREOMR_SCREENSHOT_THEME=dark LIBREOMR_SCREENSHOT_TO=target/native-dark.png cargo run --locked --features ui-screenshot
+LIBREOMR_SCREENSHOT_IMAGE=/path/to/scan.tif LIBREOMR_SCREENSHOT_TO=target/original-scan.png cargo run --locked --features ui-screenshot
+LIBREOMR_PREVIEW_ACCIDENTALS_SCREENSHOT=1 LIBREOMR_SCREENSHOT_THEME=dark LIBREOMR_SCREENSHOT_TO=target/preview-accidentals.png cargo run --locked --features ui-screenshot
+LIBREOMR_PROBLEMS_SCREENSHOT=1 LIBREOMR_SCREENSHOT_TO=target/export-problems.png cargo run --locked --features ui-screenshot
+LIBREOMR_SETTINGS_SCREENSHOT=1 LIBREOMR_SCREENSHOT_LANGUAGE=en LIBREOMR_SCREENSHOT_TO=target/settings.png cargo run --locked --features ui-screenshot
 ```
 
-Der eingebaute Screenshot-Modus von `eframe` beendet das Programm nach den
-ersten Renderdurchlaeufen. Das Feature `ui-screenshot` erkennt die Demo vor
-dem ersten Bild synchron, damit Korrekturwerkzeuge und Vorschau sichtbar sind.
-Der Check prueft das native Rendern, ersetzt aber keine
-interaktiven Tests von Dateidialogen, Mausaktionen und Korrekturen.
+The screenshot mode uses egui's native framebuffer capture on both wgpu and
+OpenGL, then exits after saving the image. `ui-screenshot`
+recognizes the demo synchronously before the first image so correction tools and
+preview are visible. Captures default to English and can explicitly request
+German with `LIBREOMR_SCREENSHOT_LANGUAGE=de`. Native rendering checks complement
+interactive file-dialog, mouse and correction testing.
 
-Die GitHub-Actions-Konfiguration fuehrt Tests, Clippy und Builds auf Linux,
-Windows und macOS aus. Die Plattformunterstuetzung basiert auf den verwendeten
-Rust-Bibliotheken; ein lokaler macOS-Build alleine bestaetigt nicht die
-Lauffaehigkeit auf den anderen Plattformen. Interaktive GUI-Abnahme bleibt
-zusaetzlich erforderlich.
+GitHub Actions runs tests, Clippy and builds across platforms. Platform support
+depends on the underlying Rust libraries; a local build on one platform alone
+does not establish behavior on the others. Interactive GUI acceptance is still
+required.
 
-Die Tests fuer Segno/Coda und Volten pruefen drei Skalierungen, offene und
-geschlossene Klammern, Notenausschluss, Projektrundlauf, Export und Auswahl
-in beiden Vorschaugroessen. Der Originaltest prueft die beiden Segnos und
-beiden Codas in O Holy Night; ein Negativtest verwirft die eingerahmten
-Proben-/Taktzahlen in Cassiopeia und A Little Concert Suite. Volten sind
-bisher mit synthetischen Bildern abgesichert.
+Segno/coda and volta tests cover three scales, open/closed endings, note
+exclusion, project round trips, export and selection at both preview sizes.
+Original tests check both segnos and both codas in Holy Night. Negatives reject
+boxed rehearsal/measure numbers in Cassiopeia and A Little Concert Suite.
+Voltas currently have synthetic coverage.
 
 ```sh
 LIBREOMR_HOLY_NIGHT_TEST_IMAGE=local/scores/A_Holy_Night_-_BassCf-1.tif \
 cargo test --locked external_repeat_marks -- --ignored
 ```
 
-Fuer den Negativtest zusaetzlich `LIBREOMR_TEST_IMAGE` und
-`LIBREOMR_SUITE_TEST_IMAGE` wie oben setzen.
+For negatives, also set `LIBREOMR_TEST_IMAGE` and `LIBREOMR_SUITE_TEST_IMAGE`.
 
-PDF-/TIFF-Importtests (`cargo test --locked document_import`) pruefen eine selbst
-erzeugte zweiseitige PDF mit unterschiedlichen Seitengroessen, Beschnitt und
-Drehung, mehrseitige TIFFs mit verschiedenen Farbtiefen, Transparenz und
-Kompressionen sowie BigTIFF, beide TIFF-Bytefolgen und mehrseitiges Fax3.
-Weitere Tests pruefen Seitenermittlung waehrend laufender Analyse, Reiter- und
-Warteschlangenreihenfolge, seitenbezogene Wiederholung nach Fehlern sowie
-Projektrundlauf und gemeinsamen MusicXML-Export nach dem Verschieben der Reiter.
+PDF/TIFF tests (`cargo test --locked document_import`) use a generated two-page
+PDF with different page sizes, crop and rotation; multipage TIFFs with varied
+bit depth, transparency and compression; BigTIFF; both byte orders; and multipage
+Fax3. Further tests cover discovery during analysis, tab/queue order, per-page
+retries, project round trips and combined export after reordering tabs.
 
-Beim PDF `80er_KULTtour_2_-_Bass2Cf.pdf` wurde die linke Systemkante auf
-Seite 2 innerhalb des Bassschluessels angesetzt. Nach erfolglosen normalen
-Schluesselsuchen wird die nahe linke Kante anhand von mindestens vier der
-fuenf Notenlinien mit vertikaler Toleranz erneut gesucht. Die zusaetzliche
-Suche ist auf drei Notenabstaende begrenzt; die Geometrie fuer die
-Notenerkennung bleibt erhalten. Synthetische Tests pruefen stark
-angeschnittene Bass- und Violinschluessel bei drei Skalierungen.
-Der optionale PDF-Test prueft alle 43 Zeilenanfaenge auf
-den vier Seiten einschliesslich der Wechsel zwischen drei Bes und einem B:
+On page 2 of `80er_KULTtour_2_-_Bass2Cf.pdf`, the estimated left edge fell inside
+the bass clef. After normal clef searches fail, the nearby edge is retried using
+at least four of five staff lines with vertical tolerance. Search extends at
+most three spacings and preserves note-recognition geometry. Synthetic tests
+cover strongly clipped bass/treble clefs at three scales. The optional PDF test
+checks all 43 row starts across four pages, including changes between three
+flats and one flat:
 
 ```sh
 LIBREOMR_KULTTOUR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \

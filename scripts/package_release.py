@@ -155,6 +155,7 @@ def assemble(root, stage, data, profile, target, commit, dirty, tag=None):
     extension = ".exe" if target.endswith("windows-msvc") else ""
     for name in ("README.md", "LICENSE", "COPYRIGHT"):
         shutil.copy2(root / name, stage / name)
+    shutil.copytree(root / "docs", stage / "docs")
     # Only public example material and the README's images are distributed.
     shutil.copytree(root / "examples/public-domain", stage / "examples/public-domain")
     (stage / "assets").mkdir()

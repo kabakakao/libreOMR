@@ -1,3 +1,4 @@
+use libreomr::i18n;
 use std::{collections::HashMap, sync::OnceLock};
 
 use ab_glyph::{Font, FontRef};
@@ -628,7 +629,7 @@ impl Preview {
         inherited: Option<TimeSignature>,
     ) -> Option<Selection> {
         let Some(staff) = score.staves.get(staff_index) else {
-            ui.label("Kein Notensystem");
+            ui.label(i18n::tr("No staff"));
             return None;
         };
         let time_signature =
@@ -1142,7 +1143,10 @@ impl Preview {
                             ui.id().with(("dynamic", index)),
                             Sense::click(),
                         )
-                        .on_hover_text(format!("Dynamik {}", dynamic.kind.label()))
+                        .on_hover_text(i18n::format(
+                            "Dynamic {0}",
+                            &[("0", dynamic.kind.label().to_string())],
+                        ))
                         .clicked()
                     {
                         clicked = Some(Selection::Dynamic(index));
@@ -1458,7 +1462,10 @@ impl Preview {
                                     ui.id().with(("rest", index)),
                                     Sense::click(),
                                 )
-                                .on_hover_text(format!("Pause {}", rest.duration_label()))
+                                .on_hover_text(i18n::format(
+                                    "Rest {0}",
+                                    &[("0", rest.duration_label().to_string())],
+                                ))
                                 .clicked()
                             {
                                 clicked = Some(Selection::Rest(index));
@@ -1486,9 +1493,15 @@ impl Preview {
                                     ui.id().with(("time_change", index)),
                                     Sense::click(),
                                 )
-                                .on_hover_text(format!(
-                                    "Taktwechsel {}",
-                                    score.time_changes[index].time_signature.label()
+                                .on_hover_text(i18n::format(
+                                    "Time change {0}",
+                                    &[(
+                                        "0",
+                                        score.time_changes[index]
+                                            .time_signature
+                                            .label()
+                                            .to_string(),
+                                    )],
                                 ))
                                 .clicked()
                             {
@@ -1528,9 +1541,12 @@ impl Preview {
                                     ui.id().with(("key_change", index)),
                                     Sense::click(),
                                 )
-                                .on_hover_text(format!(
-                                    "Tonartwechsel {}",
-                                    score.key_changes[index].key_signature.label()
+                                .on_hover_text(i18n::format(
+                                    "Key change {0}",
+                                    &[(
+                                        "0",
+                                        score.key_changes[index].key_signature.label().to_string(),
+                                    )],
                                 ))
                                 .clicked()
                             {
@@ -1598,9 +1614,9 @@ impl Preview {
                                 )
                                 .on_hover_cursor(egui::CursorIcon::Grab)
                                 .on_hover_text(if right {
-                                    "Endanker ziehen"
+                                    i18n::tr("Drag end anchor")
                                 } else {
-                                    "Anfangsanker ziehen"
+                                    i18n::tr("Drag start anchor")
                                 });
                             if response.clicked() {
                                 clicked = Some(Selection::Span(index));

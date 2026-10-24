@@ -1,5 +1,6 @@
 //! Error reporting that works even before the graphics renderer is available.
 
+use libreomr::i18n;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -19,18 +20,25 @@ pub fn report_error(error: &str) {
 fn report(error: &str, details: &str) {
     let report = diagnostic_report(details);
     let log_message = match save_report(&report) {
-        Ok(path) => format!("Fehlerbericht: {}", path.display()),
-        Err(failure) => format!("Der Fehlerbericht konnte nicht gespeichert werden: {failure}"),
+        Ok(path) => i18n::format("Error report: {0}", &[("0", format!("{}", path.display()))]),
+        Err(failure) => i18n::format(
+            "Could not save the error report: {failure}",
+            &[("failure", format!("{}", failure))],
+        ),
     };
-    let message = format!(
-        "libreOMR wurde wegen eines Fehlers beendet.\n\n{}\n\n{log_message}\n\nTechnische Details:\n{error}",
-        recovery_help()
+    let message = i18n::format(
+        "libreOMR stopped because of an error.\n\n{0}\n\n{log_message}\n\nTechnical details:\n{error}",
+        &[
+            ("0", recovery_help().to_string()),
+            ("log_message", log_message.to_string()),
+            ("error", error.to_string()),
+        ],
     );
     // Preserve diagnostics when launched from a console, including log failures.
     // Ignore a closed stderr: reporting must not itself panic.
     let _ = writeln!(std::io::stderr(), "{message}\n\n{report}");
     rfd::MessageDialog::new()
-        .set_title("libreOMR - Fehler")
+        .set_title(i18n::tr("libreOMR - Error"))
         .set_description(&message)
         .set_level(rfd::MessageLevel::Error)
         .set_buttons(rfd::MessageButtons::Ok)
@@ -73,15 +81,13 @@ fn write_report_to(directory: &Path, report: &str) -> std::io::Result<PathBuf> {
 
 fn recovery_help() -> &'static str {
     if cfg!(target_os = "windows") {
-        "Bei Grafikfehlern: Windows und den Grafiktreiber vom Gerätehersteller aktualisieren. \
-         In einer VM auch die Grafikunterstützung der Gast-Erweiterungen prüfen.\n\n\
-         Dieser Build enthält den wgpu-Renderer und verwendet Direct3D 12 statt OpenGL. \
-         Als Alternative kann Vulkan versucht werden (PowerShell):\n\
-         $env:WGPU_BACKEND = 'vulkan'; .\\libreomr.exe\n\n\
-         Bitte bei einer Fehlermeldung den Fehlerbericht beifügen."
+        i18n::tr(
+            "For graphics errors: update Windows and the graphics driver from the device manufacturer. In a VM, also check graphics support in the guest tools.\n\nThis build includes the wgpu renderer and uses Direct3D 12 instead of OpenGL. Alternatively, try Vulkan (PowerShell):\n$env:WGPU_BACKEND = 'vulkan'; .\\libreomr.exe\n\nPlease attach the error report when reporting a problem.",
+        )
     } else {
-        "Bei Grafikfehlern den Grafiktreiber und die OpenGL-Unterstützung prüfen. \
-         Bitte bei einer Fehlermeldung den Fehlerbericht beifügen."
+        i18n::tr(
+            "For graphics errors, check the graphics driver and OpenGL support. Please attach the error report when reporting a problem.",
+        )
     }
 }
 

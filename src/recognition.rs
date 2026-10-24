@@ -113,18 +113,18 @@ pub fn recognize_with_progress(
             staff,
         });
     };
-    report(0, "Notenbild vorbereiten", None);
+    report(0, "Prepare score image", None);
     let binary = threshold(image, 170, ThresholdType::Binary);
-    report(1, "Notensysteme erkennen", None);
+    report(1, "Detect staves", None);
     let mut staves = detect_staves(&binary);
     let staff_count = staves.len();
     let mut notes = Vec::new();
     let mut rests = Vec::new();
-    report(2, "Schluessel, Noten und Pausen erkennen", None);
+    report(2, "Detect clefs, notes and rests", None);
     for (staff_index, staff) in staves.iter_mut().enumerate() {
         report(
             2,
-            "Schluessel, Noten und Pausen erkennen",
+            "Detect clefs, notes and rests",
             Some((staff_index + 1, staff_count)),
         );
         staff.header = crate::symbols::recognize_header(&binary, staff);
@@ -132,41 +132,41 @@ pub fn recognize_with_progress(
         notes.extend(detect_notes(&binary, staff, staff_index, &staff_rests));
         rests.extend(staff_rests);
     }
-    report(3, "Taktstriche erkennen", None);
+    report(3, "Detect barlines", None);
     let mut barlines: Vec<_> = staves
         .iter()
         .enumerate()
         .flat_map(|(index, staff)| {
-            report(3, "Taktstriche erkennen", Some((index + 1, staff_count)));
+            report(3, "Detect barlines", Some((index + 1, staff_count)));
             detect_barlines(&binary, staff, index, &notes)
         })
         .collect();
-    report(4, "Tonartwechsel erkennen", None);
+    report(4, "Detect key changes", None);
     let key_changes: Vec<_> = staves
         .iter()
         .enumerate()
         .flat_map(|(index, staff)| {
-            report(4, "Tonartwechsel erkennen", Some((index + 1, staff_count)));
+            report(4, "Detect key changes", Some((index + 1, staff_count)));
             crate::symbols::recognize_key_changes(&binary, staff, index, &barlines)
         })
         .collect();
-    report(5, "Taktwechsel erkennen", None);
+    report(5, "Detect time changes", None);
     let time_changes: Vec<_> = staves
         .iter()
         .enumerate()
         .flat_map(|(index, staff)| {
-            report(5, "Taktwechsel erkennen", Some((index + 1, staff_count)));
+            report(5, "Detect time changes", Some((index + 1, staff_count)));
             // Meter digits can initially look like noteheads and hide the
             // adjacent boundary. Find meter anchors before that exclusion.
             let anchors = detect_barlines(&binary, staff, index, &[]);
             crate::symbols::recognize_time_changes(&binary, staff, index, &anchors)
         })
         .collect();
-    report(6, "Noten bei Tonart- und Taktwechseln pruefen", None);
+    report(6, "Check notes near key and time changes", None);
     for (index, staff) in staves.iter().enumerate() {
         report(
             6,
-            "Noten bei Tonart- und Taktwechseln pruefen",
+            "Check notes near key and time changes",
             Some((index + 1, staff_count)),
         );
         let bounds: Vec<_> = key_changes
@@ -202,16 +202,16 @@ pub fn recognize_with_progress(
         time_changes,
         ..Score::default()
     };
-    report(7, "Wiederholungszeichen und Volten erkennen", None);
+    report(7, "Detect repeat marks and endings", None);
     score.repeat_marks = crate::symbols::recognize_repeat_marks(&binary, &score);
-    report(8, "Dynamikangaben erkennen", None);
+    report(8, "Detect dynamic markings", None);
     score.dynamics = crate::symbols::recognize_dynamics(&binary, &score);
     // Navigation signs, ending labels and dynamic loops must not become noteheads.
-    report(9, "Noten und Pausen mit Symbolen abgleichen", None);
+    report(9, "Match notes and rests with symbols", None);
     for (index, staff) in score.staves.iter().enumerate() {
         report(
             9,
-            "Noten und Pausen mit Symbolen abgleichen",
+            "Match notes and rests with symbols",
             Some((index + 1, staff_count)),
         );
         let bounds: Vec<_> = score
@@ -258,7 +258,7 @@ pub fn recognize_with_progress(
             .barlines
             .extend(detect_barlines(&binary, &local, index, &score.notes));
     }
-    report(10, "Vorzeichen und Artikulationen zuordnen", None);
+    report(10, "Assign accidentals and articulations", None);
     // Reanalysis appends changed rows; retain document order for navigation,
     // exports, and callers iterating the stored objects directly.
     score
@@ -279,9 +279,9 @@ pub fn recognize_with_progress(
     });
     score.recompute_accidentals();
     crate::symbols::recognize_articulations(&binary, &mut score);
-    report(11, "Boegen und Dynamikgabeln erkennen", None);
+    report(11, "Detect slurs, ties and dynamic wedges", None);
     score.spans = crate::spans::recognize(&binary, &score);
-    report(12, "Erkennung abgeschlossen", None);
+    report(12, "Recognition complete", None);
     score
 }
 

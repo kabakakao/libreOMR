@@ -1,10 +1,14 @@
 mod app;
 mod icon;
 mod preview;
+#[cfg(feature = "ui-screenshot")]
+mod screenshot;
+mod settings;
 mod startup;
 mod theme;
 
 fn main() -> std::process::ExitCode {
+    settings::Settings::load().apply_language();
     startup::install_panic_hook();
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,

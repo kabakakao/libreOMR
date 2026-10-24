@@ -1,107 +1,106 @@
-# Builds und Releases
+# Builds and releases
 
-Die normale CI erstellt herunterladbare Entwicklungsstände. Versionierte
-Releases entstehen durch einen Git-Tag und bleiben zunächst Entwürfe.
-Es werden Windows x86_64 und ARM64, Linux x86_64 und macOS Apple Silicon unterstützt.
+Regular CI produces downloadable development builds. Versioned releases start
+from a Git tag and are initially created as drafts. Supported targets are
+Windows x86_64 and ARM64, Linux x86_64 and macOS Apple Silicon.
 
-## Entwicklungsstände
+## Development builds
 
-Nach erfolgreichen Tests und Builds lädt `Build and Test` für jede Plattform
-ein Artefakt hoch. Es enthält ein natives Archiv und dessen SHA-256-Prüfsumme;
-es bleibt 14 Tage im Actions-Lauf verfügbar. Diese Pakete verwenden das
-optimierte Profil `ci`. Dateiname und `build-info.json` nennen den Commit.
-Pull Requests erhalten ebenfalls Artefakte, benötigen dafür aber keine
-Schreibrechte auf Repository-Inhalte.
+After successful tests and builds, `Build and Test` uploads an artifact for each
+platform containing a native archive and its SHA-256 checksum. Artifacts remain
+available in the Actions run for 14 days. These packages use the optimized `ci`
+profile. The filename and `build-info.json` identify the commit. Pull requests
+also receive artifacts without requiring write access to repository contents.
 
-Die Matrix verwendet Ubuntu 22.04, `windows-latest` für Windows x86_64,
-`windows-11-arm` für Windows ARM64 und `macos-15` für Apple Silicon.
-Windows ARM64 wird mit der nativen Rust-Toolchain
-`stable-aarch64-pc-windows-msvc` gebaut und getestet. Beide Windows-Varianten
-erhalten eigene ZIP-Archive; die Architektur steht im Dateinamen, etwa
-`libreomr-0.1.1-aarch64-pc-windows-msvc.zip` für ARM64.
-Der feste Ubuntu-Stand begrenzt die benötigte glibc-Version; es handelt sich
-weiterhin um ein dynamisch gelinktes Programm mit Desktop-Systembibliotheken.
-Es sind portable Archive, keine Installer oder vollständigen Linux-Bundles.
-Das macOS-Bundle ist nicht signiert oder notarisiert.
+The matrix uses Ubuntu 22.04, `windows-latest` for Windows x86_64,
+`windows-11-arm` for Windows ARM64 and `macos-15` for Apple Silicon.
+Windows ARM64 is built and tested with the native
+`stable-aarch64-pc-windows-msvc` Rust toolchain. Both Windows variants receive
+separate ZIP archives whose filenames identify the architecture, for example
+`libreomr-0.1.1-aarch64-pc-windows-msvc.zip` for ARM64.
 
-## Einen Release vorbereiten
+The fixed Ubuntu version limits the required glibc version; the application is
+still dynamically linked against desktop system libraries. Packages are portable
+archives rather than installers or complete Linux bundles. The macOS bundle is
+not signed or notarized.
 
-1. Version in `Cargo.toml` setzen, z. B. `0.1.1` oder `0.1.1-beta.1`.
-2. Mit `cargo check --locked` prüfen. Nach einer Versionsänderung zunächst
-   `cargo check` ausführen, damit `Cargo.lock` die neue Projektversion erhält.
-3. Versionshinweise unter `docs/release-notes/<Version>.md` vorbereiten,
-   z. B. `docs/release-notes/0.1.1.md`. Der Workflow prüft, dass die Datei
-   vorhanden und nicht leer ist, und übernimmt sie in den Release-Entwurf.
-4. Änderungen einschließlich `Cargo.lock` und Versionshinweisen committen und nach `main` pushen.
-   Den erfolgreichen regulären CI-Lauf abwarten.
-5. Den gewünschten Commit mit exakt passender Version markieren und pushen:
+## Prepare a release
+
+1. Set the version in `Cargo.toml`, for example `0.1.1` or `0.1.1-beta.1`.
+2. Run `cargo check --locked`. After changing the version, first run `cargo check`
+   to update the project's version in `Cargo.lock`.
+3. Prepare `docs/release-notes/<version>.md`, for example
+   `docs/release-notes/0.1.1.md`. The workflow verifies that it exists and is not
+   empty, then uses its contents for the release draft.
+4. Commit the changes, including `Cargo.lock` and release notes, and push to
+   `main`. Wait for the regular CI run to succeed.
+5. Tag the intended commit with the exact matching version and push the tag:
 
 ```sh
 git tag -a v0.1.1 -m "libreOMR 0.1.1"
 git push origin v0.1.1
 ```
 
-Für eine Vorabversion beispielsweise `v0.1.1-beta.1` verwenden. Ein Tag allein
-veröffentlicht noch keinen Release. Der `Release`-Workflow prüft zuerst die
-Übereinstimmung mit `Cargo.toml`, danach laufen alle Qualitätsprüfungen und
-Tests erneut für genau den markierten Stand. Erst dann entstehen mit
-`cargo build --release --locked` die vier Plattformpakete.
+For a prerelease, use a tag such as `v0.1.1-beta.1`. A tag alone does not publish
+a release. The `Release` workflow first checks the version against `Cargo.toml`,
+then runs all quality checks and tests again for that exact commit. Only then
+does it build the four platform packages with `cargo build --release --locked`.
 
-Zusätzlich wird ein Quellarchiv aus den versionierten Projektdateien und den
-über `Cargo.lock` fixierten Cargo-Abhängigkeiten erstellt. `cargo vendor`
-legt diese unter `vendor/` ab; eine mitgelieferte Cargo-Konfiguration erlaubt
-den Offline-Build mit installierter Rust-Toolchain und Systembibliotheken.
-Dieses Archiv gehört zu den Binärpaketen des GPL-Releases. Private und
-ignorierte Dateien werden nicht aus dem Arbeitsverzeichnis übernommen.
+A source archive is also created from tracked project files and Cargo
+dependencies pinned by `Cargo.lock`. `cargo vendor` places dependencies in
+`vendor/`; an included Cargo configuration allows offline builds with an
+installed Rust toolchain and system dependencies. This archive accompanies the
+binary packages in the GPL release. Private and ignored files are not taken
+from the working directory.
 
-Nach erfolgreichen Builds erstellt der Workflow einen **GitHub-Release-Entwurf**
-mit den vorbereiteten Versionshinweisen, den fünf Archiven und `SHA256SUMS`.
-Tags mit einem Bindestrich werden als Vorabversion markiert. Schreibrechte
-auf Repository-Inhalte besitzt nur der letzte Job zum Anlegen des Entwurfs.
-Für die übrigen Jobs reichen Leserechte; ein persönlicher Token ist nicht nötig.
+After successful builds, the workflow creates a **GitHub release draft** with
+the prepared notes, five archives and `SHA256SUMS`. Tags containing a hyphen
+are marked as prereleases. Only the final draft-creation job has write access
+to repository contents. Other jobs need read access only; a personal token is
+not required.
 
-Den Entwurf unter **Releases** öffnen, Versionshinweise ergänzen und die
-Pakete auf den Zielplattformen ausprobieren. Anschließend dort veröffentlichen.
-Die Download-Links in der README führen zur Release-Übersicht.
+Open the draft under **Releases**, complete the notes and try the packages on
+their target platforms. Publish it there when ready. README download links
+point to the release overview.
 
-Ein erneuter Lauf überschreibt keinen bereits angelegten Release. Falls nur
-das Anlegen des Entwurfs fehlgeschlagen ist, diesen Job erneut starten. Existiert
-der Entwurf bereits, dessen Dateien prüfen; für geänderten Code eine neue
-Version verwenden und Tags veröffentlichter Versionen nicht verschieben.
+Rerunning the workflow does not overwrite an existing release. If only draft
+creation failed, rerun that job. If the draft already exists, inspect its files;
+use a new version for changed code and never move tags of published versions.
 
-## Paketinhalt und Lizenzen
+## Package contents and licenses
 
-`scripts/package_release.py` verwendet eine ausdrückliche Dateiauswahl für die
-Binärpakete: Anwendung, Benchmark-Programm, Nutzungsanleitung, öffentliche
-Beispielpartitur, Bilder der Anleitung sowie Lizenz- und Copyright-Hinweise.
-Linux-Pakete enthalten zusätzlich den Desktop-Eintrag, Icons unter
-`share/icons/hicolor` und `install-desktop.py` für die Einrichtung im
-Anwendungsmenü des aktuellen Benutzers. Unter Windows wird vor dem Paketieren
-geprüft, dass sich die eingebetteten Icons aus der EXE auslesen lassen;
-macOS-Bundles werden auf den Icon-Verweis und eine gültige ICNS-Datei geprüft.
-Private Scans, lokale Exporte, Testdaten und Build-Verzeichnisse gehören
-nicht dazu. `build-info.json` enthält Version, Commit, Plattform und Build-Profil.
+`scripts/package_release.py` uses an explicit file selection for binary packages:
+the application, benchmark executable, user guide, documentation, public sample score, guide
+images, and license/copyright notices. Language catalogs are embedded in the
+application; the package needs no separate locale directory. User settings
+remain outside the package and score projects.
 
-Der Projektcode steht unter `GPL-3.0-or-later`. `LICENSE` enthält den
-vollständigen GPLv3-Text, `COPYRIGHT` die Freigabe für Version 3 oder später.
-Die deklarierten Lizenzen des aufgelösten Cargo-Abhängigkeitsgraphen stehen in
-`THIRD_PARTY_NOTICES.md`; verfügbare Originalhinweise werden unter `licenses/`
-mitgeliefert. Fehlende Texte aus Cargo-Archiven werden aus den
-[ergänzenden Lizenzhinweisen](../assets/dependency-licenses/README.md) übernommen;
-Quell-URLs und Prüfsummen bleiben im Paket erhalten. Bei Abhängigkeitsupdates
-müssen diese versionsgebundenen Kopien gegebenenfalls ergänzt werden.
-Die Liste enthält auch Build-, Test- und andere
-Plattformabhängigkeiten und behauptet keine Verwendung aller Komponenten
-in jedem Programm. Fonts und die Beispielpartitur behalten ihre eigenen
-Lizenz- beziehungsweise Gemeinfreiheitsangaben. Im macOS-Bundle liegen die
-Lizenztexte zusätzlich unter `Contents/Resources`, damit sie beim Kopieren
-der App erhalten bleiben.
+Linux packages also contain a desktop entry, icons under `share/icons/hicolor`
+and `install-desktop.py` for the current user's application menu. Before packaging
+Windows builds, the scripts check that embedded icons can be read from the EXE.
+macOS bundles are checked for their icon reference and a valid ICNS file.
+Private scans, local exports, test data and build directories are excluded.
+`build-info.json` records version, commit, platform and build profile.
 
-## Lokal überprüfen
+Project code is licensed under `GPL-3.0-or-later`. `LICENSE` contains the full
+GPLv3 text; `COPYRIGHT` grants use under version 3 or later. Declared licenses
+from the resolved Cargo dependency graph appear in `THIRD_PARTY_NOTICES.md`;
+available original notices are included under `licenses/`. Missing texts in
+Cargo archives are supplied from the
+[supplementary notices](../assets/dependency-licenses/README.md), preserving
+source URLs and checksums. Dependency updates may require updated copies for
+the new versions.
 
-Python 3.11 oder neuer wird für die Python-Tests benötigt; das Paketierungsskript
-selbst benötigt Python 3.9 oder neuer. Nach einem Build kann ein
-lokales Paket erzeugt werden:
+The list also includes build, test and other-platform dependencies; it does not
+claim that every component is used in every executable. Fonts and the sample
+score retain their own license or public-domain notices. In macOS bundles,
+license texts also appear under `Contents/Resources` so they remain with the
+application when it is copied.
+
+## Local verification
+
+Python tests require Python 3.11 or newer; the packaging script itself requires
+Python 3.9 or newer. After building, create a local package with:
 
 ```sh
 cargo build --profile ci --locked
@@ -109,10 +108,10 @@ python3 scripts/package_release.py --profile ci
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-Die Ausgabe liegt unter dem ignorierten Ordner `dist/`. Nicht markierte Builds
-tragen `dev`, die Commit-Kennung und bei lokalen Änderungen zusätzlich `dirty`
-im Dateinamen. Ein offizielles Paket setzt einen sauberen Checkout, das
-Release-Profil und eine passende Versionsangabe voraus:
+Output is written to the ignored `dist/` directory. Untagged build filenames
+include `dev`, the commit ID and, if there are local changes, `dirty`.
+Official packages require a clean checkout, the release profile and a matching
+version:
 
 ```sh
 python3 scripts/package_release.py --check-tag v0.1.1
@@ -121,5 +120,5 @@ python3 scripts/package_release.py --profile release --release-tag v0.1.1
 python3 scripts/package_release.py --source-tag v0.1.1
 ```
 
-Auf macOS wird das Apple-Silicon-App-Bundle automatisch erstellt. Für ein
-Bundle ohne Archiv bleibt `sh scripts/build-macos-app.sh` verfügbar.
+The Apple Silicon app bundle is created automatically on macOS. To create a
+bundle without an archive, use `sh scripts/build-macos-app.sh`.

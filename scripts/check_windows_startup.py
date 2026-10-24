@@ -4,6 +4,7 @@
 import ctypes
 from ctypes import wintypes
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -11,7 +12,7 @@ import tempfile
 import time
 
 
-def check(binary):
+def check(binary, language="english"):
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
@@ -37,6 +38,13 @@ def check(binary):
     with tempfile.TemporaryDirectory(prefix="libreomr-startup-") as temporary:
         environment = os.environ.copy()
         environment["LOCALAPPDATA"] = temporary
+        environment["APPDATA"] = temporary
+        settings = Path(temporary) / "libreOMR/settings.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"language": language}), encoding="utf-8")
+        title = "libreOMR - Error" if language == "english" else "libreOMR - Fehler"
+        expected_labels = (("Technical details:", "Error report:") if language == "english"
+                           else ("Technische Details:", "Fehlerbericht:"))
         # An empty backend set deterministically fails before app creation on
         # every Windows runner, regardless of its GPU/driver capabilities.
         environment["WGPU_BACKEND"] = ""
@@ -54,7 +62,7 @@ def check(binary):
                     owner = wintypes.DWORD()
                     user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
                     if (owner.value == process.pid and user32.IsWindowVisible(window)
-                            and window_text(window) == "libreOMR - Fehler"):
+                            and window_text(window) == title):
                         dialogs.append(window)
                     return True
 
@@ -80,7 +88,7 @@ def check(binary):
 
                 user32.EnumChildWindows(dialogs[0], collect_text, 0)
                 description = "\n".join(text)
-                for expected in ("Technische Details:", "Fehlerbericht:", "error.log", "Direct3D 12"):
+                for expected in (*expected_labels, "error.log", "Direct3D 12"):
                     if expected not in description:
                         raise AssertionError(f"Error dialog is missing {expected!r}: {description}")
                 # Click the actual OK control. A synthetic WM_COMMAND without
@@ -109,4 +117,6 @@ def check(binary):
 if __name__ == "__main__":
     if sys.platform != "win32":
         raise SystemExit("This smoke test requires Windows")
-    check(Path(sys.argv[1]).resolve(strict=True))
+    binary = Path(sys.argv[1]).resolve(strict=True)
+    for language in ("english", "german"):
+        check(binary, language)

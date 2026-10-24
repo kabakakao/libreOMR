@@ -6,24 +6,38 @@ use tiff::{decoder::Decoder, tags::Tag};
 
 /// Enumerate the main IFD chain without decompressing any image pixels.
 pub(crate) fn page_offsets(reader: impl Read + Seek, max_pages: usize) -> Result<Vec<u64>, String> {
-    let mut decoder = Decoder::new(reader).map_err(|error| format!("TIFF unlesbar: {error}"))?;
+    let mut decoder = Decoder::new(reader).map_err(|error| {
+        crate::i18n::format(
+            "Cannot read TIFF: {error}",
+            &[("error", format!("{}", error))],
+        )
+    })?;
     let mut offsets = Vec::new();
     loop {
         if offsets.len() >= max_pages {
-            return Err(format!("TIFF hat mehr als {max_pages} Seiten."));
+            return Err(crate::i18n::format(
+                "TIFF has more than {max_pages} pages.",
+                &[("max_pages", format!("{}", max_pages))],
+            ));
         }
         offsets.push(
             decoder
                 .ifd_pointer()
-                .ok_or("TIFF-Seite ohne Bildverzeichnis.")?
+                .ok_or(crate::i18n::tr("TIFF page has no image directory."))?
                 .0,
         );
         if !decoder.more_images() {
             break;
         }
-        decoder
-            .next_image()
-            .map_err(|error| format!("TIFF-Seite {} unlesbar: {error}", offsets.len() + 1))?;
+        decoder.next_image().map_err(|error| {
+            crate::i18n::format(
+                "Cannot read TIFF page {0}: {error}",
+                &[
+                    ("0", format!("{}", offsets.len() + 1)),
+                    ("error", format!("{}", error)),
+                ],
+            )
+        })?;
     }
     Ok(offsets)
 }
@@ -67,7 +81,7 @@ pub(crate) fn decode_page(mut reader: impl Read + Seek, offset: u64) -> Result<G
             });
             16
         }
-        _ => return Err("Ungueltiger TIFF-Header.".into()),
+        _ => return Err(crate::i18n::tr("Invalid TIFF header.").into()),
     };
     reader
         .seek(SeekFrom::Start(0))
@@ -112,7 +126,12 @@ impl<R: Seek> Seek for PageReader<R> {
 }
 
 pub fn decode_fax3(reader: &mut (impl Read + Seek)) -> Result<Option<GrayImage>, String> {
-    decode(reader).map_err(|error| format!("Fax3-TIFF konnte nicht geladen werden: {error}"))
+    decode(reader).map_err(|error| {
+        crate::i18n::format(
+            "Could not load Fax3 TIFF: {error}",
+            &[("error", error.to_string())],
+        )
+    })
 }
 
 fn decode(reader: &mut (impl Read + Seek)) -> Result<Option<GrayImage>, String> {
@@ -141,16 +160,22 @@ fn decode(reader: &mut (impl Read + Seek)) -> Result<Option<GrayImage>, String> 
     let orientation = tag(Tag::Orientation, 1)?;
     let rows_per_strip = tag(Tag::RowsPerStrip, height)?.min(height);
     if bits != 1 || samples != 1 || photometric > 1 || !(1..=2).contains(&fill_order) {
-        return Err("Fax3 erfordert ein Schwarz-Weiss-Bild mit einem Bit pro Pixel.".into());
+        return Err(crate::i18n::tr(
+            "Fax3 requires a black-and-white image with one bit per pixel.",
+        )
+        .into());
     }
     if options & !5 != 0 {
-        return Err("Fax3 mit unkomprimierten Teilbereichen wird noch nicht unterstuetzt.".into());
+        return Err(crate::i18n::tr("Fax3 with uncompressed regions is not yet supported.").into());
     }
     if orientation != 1 {
-        return Err("Diese TIFF-Ausrichtung wird fuer Fax3 noch nicht unterstuetzt. Bild bitte aufrecht speichern.".into());
+        return Err(crate::i18n::tr(
+            "This TIFF orientation is not yet supported for Fax3. Please save the image upright.",
+        )
+        .into());
     }
     if rows_per_strip == 0 {
-        return Err("Ungueltige Streifenhoehe.".into());
+        return Err(crate::i18n::tr("Invalid strip height.").into());
     }
     let offsets = decoder
         .get_tag_u64_vec(Tag::StripOffsets)
@@ -168,7 +193,7 @@ fn decode(reader: &mut (impl Read + Seek)) -> Result<Option<GrayImage>, String> 
             .try_fold(0_u64, |total, count| total.checked_add(*count))
             .is_none_or(|total| total > 256 * 1024 * 1024)
     {
-        return Err("Ungueltige oder zu grosse TIFF-Bildstreifen.".into());
+        return Err(crate::i18n::tr("Invalid or oversized TIFF image strips.").into());
     }
     let mut image = GrayImage::new(width, height);
     for (index, (&offset, &count)) in offsets.iter().zip(&counts).enumerate() {
@@ -210,10 +235,22 @@ fn decode(reader: &mut (impl Read + Seek)) -> Result<Option<GrayImage>, String> 
             column: 0,
             invalid: false,
         };
-        hayro_ccitt::decode(&compressed, &mut output, &mut DecoderContext::new(settings))
-            .map_err(|error| format!("Beschaedigter Bildstreifen {}: {error}", index + 1))?;
+        hayro_ccitt::decode(&compressed, &mut output, &mut DecoderContext::new(settings)).map_err(
+            |error| {
+                crate::i18n::format(
+                    "Damaged image strip {0}: {error}",
+                    &[
+                        ("0", format!("{}", index + 1)),
+                        ("error", format!("{}", error)),
+                    ],
+                )
+            },
+        )?;
         if output.invalid || output.row != rows as usize {
-            return Err(format!("Bildstreifen {} ist unvollstaendig.", index + 1));
+            return Err(crate::i18n::format(
+                "Image strip {0} is incomplete.",
+                &[("0", format!("{}", index + 1))],
+            ));
         }
     }
     Ok(Some(image))
