@@ -3,7 +3,7 @@
 set -eu
 
 if [ "$(uname -s)" != "Darwin" ]; then
-    echo "This script requires macOS (sips and iconutil)." >&2
+    echo "This script requires macOS (iconutil)." >&2
     exit 1
 fi
 
@@ -39,11 +39,11 @@ iconset_dir="$project_dir/target/libreomr.iconset"
 mkdir -p "$bundle_dir/Contents/MacOS" "$bundle_dir/Contents/Resources" "$iconset_dir"
 
 for size in 16 32 128 256 512; do
-    sips -z "$size" "$size" assets/libreomr-icon-dark.png \
-        --out "$iconset_dir/icon_${size}x${size}.png" >/dev/null
+    cp "assets/icons/${size}x${size}/org.libreomr.libreomr.png" \
+        "$iconset_dir/icon_${size}x${size}.png"
     retina_size=$((size * 2))
-    sips -z "$retina_size" "$retina_size" assets/libreomr-icon-dark.png \
-        --out "$iconset_dir/icon_${size}x${size}@2x.png" >/dev/null
+    cp "assets/icons/${retina_size}x${retina_size}/org.libreomr.libreomr.png" \
+        "$iconset_dir/icon_${size}x${size}@2x.png"
 done
 
 iconutil -c icns "$iconset_dir" -o "$bundle_dir/Contents/Resources/libreomr.icns"

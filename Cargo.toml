@@ -1,6 +1,6 @@
 [package]
 name = "libreomr"
-version = "0.1.0"
+version = "0.1.1"
 default-run = "libreomr"
 edition = "2024"
 rust-version = "1.92"
@@ -38,6 +38,13 @@ serde_json = "1"
 tempfile = "3"
 tiff = "0.11"
 tiny-skia = { version = "0.11.4", optional = true, default-features = false, features = ["std", "simd"] }
+
+[build-dependencies]
+winresource = { version = "=0.1.34", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Bundle the Direct3D renderer so Windows does not need an OpenGL driver.
+eframe = { version = "0.33", optional = true, features = ["wgpu"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }

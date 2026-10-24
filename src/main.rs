@@ -1,13 +1,33 @@
 mod app;
 mod icon;
 mod preview;
+mod startup;
 mod theme;
 
-fn main() -> eframe::Result {
+fn main() -> std::process::ExitCode {
+    startup::install_panic_hook();
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            startup::report_error(&format!("{error}\n\n{error:?}"));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> eframe::Result {
     let compact_capture = cfg!(feature = "ui-screenshot")
         && std::env::var_os("LIBREOMR_COMPACT_SCREENSHOT").is_some();
     let options = eframe::NativeOptions {
+        // Keep OpenGL on Linux/macOS; Windows uses the bundled wgpu renderer.
+        #[cfg(target_os = "windows")]
+        renderer: eframe::Renderer::Wgpu,
+        #[cfg(not(target_os = "windows"))]
+        renderer: eframe::Renderer::Glow,
+        #[cfg(target_os = "windows")]
+        wgpu_options: startup::windows_wgpu_options(),
         viewport: eframe::egui::ViewportBuilder::default()
+            .with_app_id("org.libreomr.libreomr")
             .with_icon(icon::window_icon())
             .with_inner_size(if compact_capture {
                 [760.0, 520.0]

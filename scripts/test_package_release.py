@@ -2,10 +2,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -15,11 +17,11 @@ import package_release as packaging
 
 class PackagingTests(unittest.TestCase):
     def test_manifest_binary_names_match_packaging_contract(self):
-        package = packaging.project_package(packaging.metadata())
-        binaries = {target["name"] for target in package["targets"] if "bin" in target["kind"]}
+        manifest = tomllib.loads((packaging.ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+        binaries = {target["name"] for target in manifest["bin"]}
         self.assertIn("libreomr", binaries)
         self.assertIn("omr-benchmark", binaries)
-        self.assertEqual(package["default_run"], "libreomr")
+        self.assertEqual(manifest["package"]["default-run"], "libreomr")
 
     def fixture(self, parent):
         root = parent / "project"
@@ -37,6 +39,10 @@ class PackagingTests(unittest.TestCase):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
+        for directory in ("assets/icons", "assets/linux"):
+            shutil.copytree(packaging.ROOT / directory, root / directory)
+        (root / "scripts").mkdir()
+        shutil.copy2(packaging.ROOT / "scripts/install_linux_desktop.py", root / "scripts")
         for name in ("libreomr", "omr-benchmark", "libreomr.exe", "omr-benchmark.exe"):
             binary = root / "target/ci" / name
             binary.write_bytes(b"native binary")
@@ -46,6 +52,14 @@ class PackagingTests(unittest.TestCase):
         app_binary.write_bytes(b"native binary")
         app_binary.chmod(0o755)
         (app_binary.parent.parent / "Resources").mkdir()
+        (app_binary.parent.parent / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": packaging.APP_ID,
+            "CFBundleExecutable": "libreomr",
+            "CFBundleIconFile": "libreomr.icns",
+        }))
+        (app_binary.parent.parent / "Resources/libreomr.icns").write_bytes(
+            b"icns\x00\x00\x00\x10icp4\x00\x00\x00\x08"
+        )
         dependency = parent / "dependency"
         (dependency / "fonts").mkdir(parents=True)
         (dependency / "LICENSE-MIT").write_text("dependency license")
@@ -75,6 +89,7 @@ class PackagingTests(unittest.TestCase):
                         if target.endswith("apple-darwin"):
                             executable = "bundle/libreOMR.app/Contents/MacOS/libreomr"
                             self.assertEqual(bundle.getinfo(executable).external_attr >> 16 & 0o777, 0o755)
+                            self.assertIn("bundle/libreOMR.app/Contents/Resources/libreomr.icns", names)
                             for notice in ("LICENSE", "COPYRIGHT", "THIRD_PARTY_NOTICES.md", "licenses/dependency-1.0.0/LICENSE-MIT", "licenses/Bravura-LICENSE.txt"):
                                 self.assertIn(f"bundle/libreOMR.app/Contents/Resources/{notice}", names)
                         else:
@@ -84,6 +99,11 @@ class PackagingTests(unittest.TestCase):
                     with tarfile.open(archive) as bundle:
                         names = bundle.getnames()
                         self.assertEqual(bundle.getmember("bundle/libreomr").mode & 0o777, 0o755)
+                        self.assertEqual(bundle.getmember("bundle/omr-benchmark").mode & 0o777, 0o755)
+                        self.assertIn("bundle/install-desktop.py", names)
+                        self.assertIn(f"bundle/share/applications/{packaging.APP_ID}.desktop", names)
+                        for size in packaging.ICON_SIZES:
+                            self.assertIn(f"bundle/share/icons/hicolor/{size}x{size}/apps/{packaging.APP_ID}.png", names)
                 for expected in ("LICENSE", "COPYRIGHT", "THIRD_PARTY_NOTICES.md", "examples/public-domain/bach.pdf", "licenses/dependency-1.0.0/LICENSE-MIT", "licenses/dependency-1.0.0/fonts/Hack-Regular.txt"):
                     self.assertIn(f"bundle/{expected}", names)
                 self.assertFalse(any("private.pdf" in name or "/target/" in name or "/local/" in name for name in names))
@@ -93,6 +113,19 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue(info["dirty"])
                 self.assertEqual(info["profile"], "ci")
                 self.assertEqual(info["target"], target)
+
+    def test_macos_packaging_rejects_missing_or_corrupt_bundle_icons(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _ = self.fixture(Path(temporary))
+            bundle = root / "target/ci/libreOMR.app"
+            packaging.validate_macos_bundle(bundle)
+            icon = bundle / "Contents/Resources/libreomr.icns"
+            icon.write_bytes(b"not an icon")
+            with self.assertRaisesRegex(ValueError, "ICNS"):
+                packaging.validate_macos_bundle(bundle)
+            icon.unlink()
+            with self.assertRaises(FileNotFoundError):
+                packaging.validate_macos_bundle(bundle)
 
     def test_release_rejects_version_mismatch_dirty_tree_and_ci_profile(self):
         packaging.check_tag("0.1.0-alpha.1", "v0.1.0-alpha.1")

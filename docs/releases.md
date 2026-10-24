@@ -18,7 +18,7 @@ Die Matrix verwendet Ubuntu 22.04, `windows-latest` für Windows x86_64,
 Windows ARM64 wird mit der nativen Rust-Toolchain
 `stable-aarch64-pc-windows-msvc` gebaut und getestet. Beide Windows-Varianten
 erhalten eigene ZIP-Archive; die Architektur steht im Dateinamen, etwa
-`libreomr-0.1.0-aarch64-pc-windows-msvc.zip` für ARM64.
+`libreomr-0.1.1-aarch64-pc-windows-msvc.zip` für ARM64.
 Der feste Ubuntu-Stand begrenzt die benötigte glibc-Version; es handelt sich
 weiterhin um ein dynamisch gelinktes Programm mit Desktop-Systembibliotheken.
 Es sind portable Archive, keine Installer oder vollständigen Linux-Bundles.
@@ -26,22 +26,22 @@ Das macOS-Bundle ist nicht signiert oder notarisiert.
 
 ## Einen Release vorbereiten
 
-1. Version in `Cargo.toml` setzen, z. B. `0.1.0` oder `0.1.0-beta.1`.
+1. Version in `Cargo.toml` setzen, z. B. `0.1.1` oder `0.1.1-beta.1`.
 2. Mit `cargo check --locked` prüfen. Nach einer Versionsänderung zunächst
    `cargo check` ausführen, damit `Cargo.lock` die neue Projektversion erhält.
 3. Versionshinweise unter `docs/release-notes/<Version>.md` vorbereiten,
-   z. B. `docs/release-notes/0.1.0.md`. Der Workflow prüft, dass die Datei
+   z. B. `docs/release-notes/0.1.1.md`. Der Workflow prüft, dass die Datei
    vorhanden und nicht leer ist, und übernimmt sie in den Release-Entwurf.
 4. Änderungen einschließlich `Cargo.lock` und Versionshinweisen committen und nach `main` pushen.
    Den erfolgreichen regulären CI-Lauf abwarten.
 5. Den gewünschten Commit mit exakt passender Version markieren und pushen:
 
 ```sh
-git tag -a v0.1.0 -m "libreOMR 0.1.0"
-git push origin v0.1.0
+git tag -a v0.1.1 -m "libreOMR 0.1.1"
+git push origin v0.1.1
 ```
 
-Für eine Vorabversion beispielsweise `v0.1.0-beta.1` verwenden. Ein Tag allein
+Für eine Vorabversion beispielsweise `v0.1.1-beta.1` verwenden. Ein Tag allein
 veröffentlicht noch keinen Release. Der `Release`-Workflow prüft zuerst die
 Übereinstimmung mit `Cargo.toml`, danach laufen alle Qualitätsprüfungen und
 Tests erneut für genau den markierten Stand. Erst dann entstehen mit
@@ -74,6 +74,11 @@ Version verwenden und Tags veröffentlichter Versionen nicht verschieben.
 `scripts/package_release.py` verwendet eine ausdrückliche Dateiauswahl für die
 Binärpakete: Anwendung, Benchmark-Programm, Nutzungsanleitung, öffentliche
 Beispielpartitur, Bilder der Anleitung sowie Lizenz- und Copyright-Hinweise.
+Linux-Pakete enthalten zusätzlich den Desktop-Eintrag, Icons unter
+`share/icons/hicolor` und `install-desktop.py` für die Einrichtung im
+Anwendungsmenü des aktuellen Benutzers. Unter Windows wird vor dem Paketieren
+geprüft, dass sich die eingebetteten Icons aus der EXE auslesen lassen;
+macOS-Bundles werden auf den Icon-Verweis und eine gültige ICNS-Datei geprüft.
 Private Scans, lokale Exporte, Testdaten und Build-Verzeichnisse gehören
 nicht dazu. `build-info.json` enthält Version, Commit, Plattform und Build-Profil.
 
@@ -94,7 +99,8 @@ der App erhalten bleiben.
 
 ## Lokal überprüfen
 
-Python 3.9 oder neuer wird zum Paketieren benötigt. Nach einem Build kann ein
+Python 3.11 oder neuer wird für die Python-Tests benötigt; das Paketierungsskript
+selbst benötigt Python 3.9 oder neuer. Nach einem Build kann ein
 lokales Paket erzeugt werden:
 
 ```sh
@@ -109,10 +115,10 @@ im Dateinamen. Ein offizielles Paket setzt einen sauberen Checkout, das
 Release-Profil und eine passende Versionsangabe voraus:
 
 ```sh
-python3 scripts/package_release.py --check-tag v0.1.0
+python3 scripts/package_release.py --check-tag v0.1.1
 cargo build --release --locked
-python3 scripts/package_release.py --profile release --release-tag v0.1.0
-python3 scripts/package_release.py --source-tag v0.1.0
+python3 scripts/package_release.py --profile release --release-tag v0.1.1
+python3 scripts/package_release.py --source-tag v0.1.1
 ```
 
 Auf macOS wird das Apple-Silicon-App-Bundle automatisch erstellt. Für ein
