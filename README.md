@@ -54,8 +54,8 @@ The proposals shown are not a finished, corrected transcription.
 
 Published versions are available from
 [GitHub Releases](https://github.com/kabakakao/libreOMR/releases).
-The [0.1.1 release notes](docs/release-notes/0.1.1.md) describe improvements to
-Windows startup, error reporting and application icons.
+The [0.1.2 release notes](docs/release-notes/0.1.2.md) describe language selection,
+saved appearance settings and starting Windows without a console window.
 
 | Platform | Package |
 | --- | --- |

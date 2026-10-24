@@ -1,6 +1,6 @@
 [package]
 name = "libreomr"
-version = "0.1.1"
+version = "0.1.2"
 default-run = "libreomr"
 edition = "2024"
 rust-version = "1.92"
