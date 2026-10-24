@@ -1,5 +1,4 @@
-use eframe::egui::{self, Color32, Stroke, Theme, ThemePreference, Vec2};
-use egui_phosphor::regular as icons;
+use eframe::egui::{self, Color32, Stroke, Theme, Vec2};
 
 pub struct Palette {
     pub canvas: Color32,
@@ -80,35 +79,10 @@ pub fn configure(context: &egui::Context) {
     }
 }
 
-pub fn toggle(ui: &mut egui::Ui) {
-    let preference = ui.ctx().options(|options| options.theme_preference);
-    // The containing toolbar flows right to left, so emit Auto first.
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        ui.spacing_mut().button_padding.x = 5.0;
-        for (value, label, tooltip) in [
-            (
-                ThemePreference::System,
-                "Auto",
-                "Automatisch: System-Theme folgen",
-            ),
-            (ThemePreference::Dark, icons::MOON, "Dunkles Theme"),
-            (ThemePreference::Light, icons::SUN, "Helles Theme"),
-        ] {
-            if ui
-                .selectable_label(preference == value, label)
-                .on_hover_text(tooltip)
-                .clicked()
-            {
-                ui.ctx().set_theme(value);
-            }
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::ThemePreference;
 
     fn render(
         context: &egui::Context,
@@ -127,7 +101,7 @@ mod tests {
             },
             |context| {
                 egui::TopBottomPanel::top("toolbar").show(context, |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), toggle);
+                    ui.label("Theme test");
                 });
             },
         )
@@ -157,51 +131,6 @@ mod tests {
             let foreground = visuals.text_color().r() as i16;
             let background = visuals.window_fill.r() as i16;
             assert!((foreground - background).abs() > 150);
-        }
-    }
-
-    #[test]
-    fn theme_toggle_clicks_select_all_three_modes() {
-        let context = egui::Context::default();
-        configure(&context);
-        for (label, preference, expected) in [
-            (icons::MOON, ThemePreference::Dark, Theme::Dark),
-            (icons::SUN, ThemePreference::Light, Theme::Light),
-            ("Auto", ThemePreference::System, Theme::Dark),
-        ] {
-            render(&context, Theme::Dark, vec![]);
-            let output = render(&context, Theme::Dark, vec![]);
-            let position = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == label => {
-                        Some(shape.shape.visual_bounding_rect().center())
-                    }
-                    _ => None,
-                })
-                .expect(label);
-            for pressed in [true, false] {
-                render(
-                    &context,
-                    Theme::Dark,
-                    vec![
-                        egui::Event::PointerMoved(position),
-                        egui::Event::PointerButton {
-                            pos: position,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
-                );
-            }
-            render(&context, Theme::Dark, vec![]);
-            assert_eq!(
-                context.options(|options| options.theme_preference),
-                preference
-            );
-            assert_eq!(context.theme(), expected);
         }
     }
 }

@@ -1,105 +1,88 @@
-# Erkennungsoptimierung vom 19. Oktober 2026
+# Recognition optimization, October 19, 2026
 
-Die Änderungen betreffen die eigentliche Erkennung in
-[recognition.rs](../src/recognition.rs) und [symbols.rs](../src/symbols.rs).
-Die Benchmark-Adapter, Referenzdateien, Stichproben, Ausschlüsse und
-Bewertungsregeln wurden unverändert gelassen.
+These changes affect recognition in [recognition.rs](../src/recognition.rs) and
+[symbols.rs](../src/symbols.rs). Benchmark adapters, reference files, samples,
+exclusions and scoring rules remained unchanged.
 
-## Ursachen und Änderungen
+## Causes and changes
 
-- **Vorzeichnungen:** Zeichen nach einem sicher erkannten ersten Kreuz/B
-  dürfen schwächer ausfallen, wenn sie dicht anschließen und an der
-  vorgeschriebenen Notenposition stehen. Die Entfernung der Notenlinien
-  beschädigt dieselbe Zeichenform je nach Position unterschiedlich.
-  Ein fehlendes/unlesbares erstes Zeichen wird dadurch nicht als gültige
-  Vorzeichnung übernommen.
-- **Keine Vorzeichen:** Nur eine tatsächlich leere Lücke zwischen erkanntem
-  Schlüssel und erkanntem Taktzeichen bestätigt null Kreuze/Bes. Fremde oder
-  unlesbare Tinte sowie fehlende Systemangaben bleiben unbekannt.
-- **Balken:** Lange senkrechte Striche zählen nicht mehr als Balken.
-  Eine Verbindung ausschließlich über eine Notenlinie genügt ebenfalls
-  nicht: Das verhinderte zuvor die Unterscheidung von benachbarten Taktstrichen
-  oder Arpeggio-Zeichen und einem echten Balken.
-- **Fähnchen:** Bei abwärts gerichteten Hälsen werden beide seitlichen
-  Platzierungen geprüft. Der Treffer muss am eigenen Halsende liegen;
-  mehrfache Fähnchen behalten die strengere Mindestqualität. Eine klar
-  durchgehende Balkenverbindung schließt zusätzliche Fähnchen aus.
-- **Zusätzliche Notenköpfe:** Bestätigte Fähnchen werden bei der Abweisung
-  scheinbarer Köpfe am gegenüberliegenden Ende desselben Halses
-  berücksichtigt. Ergebnisse der Fähnchensuche werden pro Hals wiederverwendet.
-- **Hohe Akkorde:** Die Halssuche kann länger als fünf Notenabstände verfolgen,
-  damit auch der oberste Kopf den gemeinsamen Balken erreicht. Weißraum
-  beendet die Suche weiterhin.
+- **Key signatures:** Symbols following a confidently recognized first sharp/flat
+  may have weaker matches when tightly adjacent and at the prescribed position.
+  Staff-line removal damages the same shape differently by position. Missing or
+  unreadable first symbols are still not accepted as a valid signature.
+- **No accidentals:** Only an actually empty gap between recognized clef and
+  meter confirms zero sharps/flats. Foreign/unreadable ink and missing attributes
+  remain unknown.
+- **Beams:** Long vertical strokes no longer count as beams. A connection only
+  through a staff line is insufficient; that previously blurred the distinction
+  between nearby barlines/arpeggios and real beams.
+- **Flags:** Both side placements are checked for downward stems. A match must
+  lie at its own stem end; multiple flags retain stricter minimum quality. A
+  clearly continuous beam connection excludes additional flags.
+- **Extra heads:** Confirmed flags help reject apparent heads at the opposite
+  end of the same stem. Flag-search results are reused per stem.
+- **Tall chords:** Stem search can exceed five spacings so the highest head
+  reaches the shared beam. Whitespace still terminates the search.
 
-## Prüfverfahren
+## Procedure
 
-Die Entwicklung erfolgte anhand des `dev`-Bestands. Nach Abschluss der
-Änderungen wurde derselbe Code auf den zuvor zurückgehaltenen `test`-Bestand
-angewandt. Der Zustand vor den Änderungen wurde dafür mit dem erhaltenen
-ursprünglichen Benchmark-Programm ebenfalls auf `test` ausgeführt.
-Kontrollbilder wurden nicht für weitere Anpassungen verwendet.
+Development used `dev`. After changes were complete, the same code ran on the
+previously held-out `test` set. The preserved original benchmark executable also
+ran on `test` to establish the previous state. Held-out images were not used
+for further adjustments.
 
-Die ursprünglichen Entwicklungsberichte bleiben unter
-`target/omr-benchmarks/primus-baseline/` und `doremi-baseline/` erhalten.
-Die endgültigen neuen Berichte liegen unter `primus-optimized-dev/`,
-`doremi-optimized-dev/`, `primus-optimized-test/` und `doremi-optimized-test/`
-im selben Verzeichnis. Die Vergleichsläufe verwenden `--baseline` ohne
-erhöhte Regressionstoleranz; etwaige Rückschritte einzelner Kennzahlen
-bleiben in den jeweiligen `regressions.json` sichtbar.
+Original development reports remain in `target/omr-benchmarks/primus-baseline/`
+and `doremi-baseline/`. Final reports are in `primus-optimized-dev/`,
+`doremi-optimized-dev/`, `primus-optimized-test/` and `doremi-optimized-test/`
+under the same directory. Comparisons use `--baseline` without increased
+regression tolerance; individual declines remain visible in `regressions.json`.
 
-Zusätzliche Regressionstests prüfen benachbarte Taktstriche/Ornamente,
-lange Akkordhälse, beide Fähnchenpositionen, beschädigte Folgezeichen und
-die Abgrenzung einer leeren Vorzeichnung von unbekannten Zeichen.
-Die lokalen Cassiopeia-Tests für Notenwerte, Einzelvorzeichen und die
-Triolen der zweiten Zeile werden separat ausgeführt.
+Additional regressions check adjacent bars/ornaments, long chord stems, both flag
+positions, damaged following key symbols and empty versus unknown signatures.
+Local Cassiopeia tests for note values, accidentals and second-row triplets
+run separately.
 
-## Messungen
+## Measurements
 
-Die vollständigen aggregierten Ergebnisse und Quellenprüfsummen stehen in
-[optimization-summary.json](optimization-summary.json). F1 und SER beziehen
-sich jeweils auf den unterstützten Teilbestand, nicht auf alle Notationsarten.
-Die Notenwert-F1 von DoReMi bewertet die klingende Dauer einschließlich
-Punkten und Triolen.
+Complete aggregates and source checksums are in
+[optimization-summary.json](optimization-summary.json). F1 and SER apply to the
+supported subset rather than all notation. DoReMi duration F1 evaluates sounding
+duration including dots and triplets.
 
-| Messung | Vorher | Nachher |
+| Measurement | Before | After |
 | --- | ---: | ---: |
-| PrIMuS Entwicklung: Ereignis-SER ↓ | 21,99 % | 6,96 % |
-| PrIMuS Kontrolle: Ereignis-SER ↓ | 19,67 % | 7,18 % |
-| PrIMuS Entwicklung: Vorzeichnungs-F1 ↑ | 47,69 % | 95,08 % |
-| PrIMuS Kontrolle: Vorzeichnungs-F1 ↑ | 55,56 % | 97,50 % |
-| PrIMuS Entwicklung: Notenwert-F1 ↑ | 83,72 % | 94,97 % |
-| PrIMuS Kontrolle: Notenwert-F1 ↑ | 81,19 % | 93,70 % |
-| DoReMi Entwicklung: Notenwert-F1 ↑ | 57,20 % | 67,51 % |
-| DoReMi Kontrolle: Notenwert-F1 ↑ | 60,95 % | 71,77 % |
+| PrIMuS development: event SER ↓ | 21.99% | 6.96% |
+| PrIMuS held-out: event SER ↓ | 19.67% | 7.18% |
+| PrIMuS development: key-signature F1 ↑ | 47.69% | 95.08% |
+| PrIMuS held-out: key-signature F1 ↑ | 55.56% | 97.50% |
+| PrIMuS development: note-value F1 ↑ | 83.72% | 94.97% |
+| PrIMuS held-out: note-value F1 ↑ | 81.19% | 93.70% |
+| DoReMi development: duration F1 ↑ | 57.20% | 67.51% |
+| DoReMi held-out: duration F1 ↑ | 60.95% | 71.77% |
 
-PrIMuS: unverändert 159 auswertbare Entwicklungs- und 41 Kontrollbeispiele;
-232 beziehungsweise 68 Beispiele außerhalb des Adapterumfangs. DoReMi:
-30 Entwicklungs- und 10 Kontrollseiten, alle auswertbar. Kein
-Verarbeitungsfehler in den vier endgültigen Läufen.
+PrIMuS retained 159 evaluable development samples and 41 held-out samples;
+232 and 68 respectively were outside adapter scope. DoReMi had 30 development
+and 10 held-out pages, all evaluable. All four final runs had no processing errors.
 
-Beide Kontrollläufe und der PrIMuS-Entwicklungslauf bestehen den strengen
-Vergleich ohne Kennzahlenrückschritt. Im DoReMi-Entwicklungsbestand steigt
-die Zahl korrekter Notendauern von 902 auf 1.065. Gleichzeitig entsteht ein
-zusätzlicher falscher Halbnotentreffer (98 → 99); die Klassen-F1 sinkt dadurch
-leicht von 88,47 % auf 88,45 %. Tonhöhen-F1 sinkt von 73,62 % auf 73,60 %,
-Alterations-F1 von 83,45 % auf 83,36 %. Diese Rückschritte bleiben ausdrücklich
-als Regressionen ausgewiesen; die Toleranz und der Bewertungsumfang wurden
-nicht angehoben.
+Both held-out runs and PrIMuS development pass strict comparison without metric
+declines. In DoReMi development, correctly recognized durations increase from
+902 to 1,065. One additional false half-note match appears (98 → 99), reducing
+class F1 slightly from 88.47% to 88.45%. Pitch F1 falls from 73.62% to 73.60%,
+and alteration F1 from 83.45% to 83.36%. These remain explicitly reported
+regressions; neither tolerance nor scoring scope was relaxed.
 
-Die Messungen belegen eine Verbesserung auf diesen festen Ausschnitten und
-Seiten. Sie belegen keine allgemeine Genauigkeit auf anderen Schriften, alten
-Scans, Fotos oder bislang ausgeschlossenen Notationsarten.
+Results show improvement on these fixed excerpts/pages, not general accuracy
+on other fonts, old scans, photos or excluded notation.
 
-## Abschließende Prüfungen
+## Final checks recorded for this optimization
 
-- `cargo test --locked`: 95 Bibliotheks- und 49 Desktop-Tests bestanden;
-  27 lokale Originaltests regulär deaktiviert.
-- Drei dieser Originaltests zusätzlich mit dem Cassiopeia-Bariton-Scan
-  ausgeführt: Notenwerte, Einzelvorzeichen und Triolen; alle bestanden.
-- `cargo clippy --all-targets --locked -- -D warnings`,
-  `cargo fmt --all --check` und der Desktop-Build bestanden.
+- `cargo test --locked`: 95 library and 49 desktop tests passed; 27 local
+  original-scan tests ignored in normal runs.
+- Three original tests also ran with the Cassiopeia baritone scan: note values,
+  accidentals and triplets; all passed.
+- `cargo clippy --all-targets --locked -- -D warnings`, `cargo fmt --all --check`
+  and the desktop build passed.
 
-Das vollständige Testprotokoll liegt unter
-`target/omr-benchmarks/tests-final-verified.log`; die separaten Originaltests
-unter `original-note-tests-optimized.log` und `original-triplet-test-optimized.log`
-im selben Ordner.
+The full log is `target/omr-benchmarks/tests-final-verified.log`; separate
+original tests are in `original-note-tests-optimized.log` and
+`original-triplet-test-optimized.log` in the same directory.

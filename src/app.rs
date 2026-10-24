@@ -13,6 +13,7 @@ use image::{DynamicImage, GrayImage, ImageFormat};
 use libreomr::{
     diagnostics::{self, Issue, Object, Severity},
     document_import::{DocumentPage, open_document},
+    i18n,
     image_import::decode_image,
     model::{
         Articulation, Barline, BarlineKind, Clef, Duration, Dynamic, DynamicKind, KeyChange,
@@ -153,7 +154,7 @@ impl JobReporter {
 
     fn straighten(&self, image: GrayImage) -> GrayImage {
         self.send(JobEvent::Image(image.clone()));
-        self.send(JobEvent::Status("Schraeglage pruefen und Bild ausrichten"));
+        self.send(JobEvent::Status("Check skew and straighten image"));
         recognition::straighten(image)
     }
 }
@@ -177,14 +178,14 @@ impl ImportState {
 
     fn label(&self) -> String {
         match self {
-            Self::Ready => "Bereit".into(),
-            Self::Queued => "Wartet".into(),
+            Self::Ready => i18n::tr("Ready").into(),
+            Self::Queued => i18n::tr("Queued").into(),
             Self::Running {
                 progress: Some(progress),
                 ..
             } => format!("{} %", (progress.fraction() * 100.0) as u32),
-            Self::Running { .. } => "Analyse".into(),
-            Self::Failed(_) => "Fehler".into(),
+            Self::Running { .. } => i18n::tr("Analysis").into(),
+            Self::Failed(_) => i18n::tr("Error").into(),
         }
     }
 }
@@ -269,6 +270,8 @@ impl PageState {
 }
 
 pub struct App {
+    settings: crate::settings::Settings,
+    show_settings: bool,
     problems: problems::Problems,
     logo_texture: Option<egui::TextureHandle>,
     logo_dark: bool,
@@ -305,17 +308,22 @@ impl App {
             match &self.page_at(index).import {
                 ImportState::Ready => {}
                 ImportState::Failed(error) => {
-                    return Err(format!(
-                        "Seite {} ({}): {error}",
-                        index + 1,
-                        self.page_at(index).name
+                    return Err(i18n::format(
+                        "Page {0} ({1}): {error}",
+                        &[
+                            ("0", format!("{}", index + 1)),
+                            ("1", self.page_at(index).name.to_string()),
+                            ("error", error.to_string()),
+                        ],
                     ));
                 }
-                _ => return Err("Bitte warten, bis alle Seiten fertig analysiert sind.".into()),
+                _ => {
+                    return Err(i18n::tr("Please wait until all pages have been analyzed.").into());
+                }
             }
         }
         if self.pending.is_some() {
-            return Err("Verarbeitung laeuft noch.".into());
+            return Err(i18n::tr("Processing is still running.").into());
         }
         Ok(())
     }
@@ -472,7 +480,7 @@ impl App {
             Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return,
             Err(mpsc::TryRecvError::Disconnected) => {
-                Err("Seitenermittlung unerwartet beendet.".into())
+                Err(i18n::tr("Page discovery ended unexpectedly.").into())
             }
         };
         let id = discovery.page_id;
@@ -508,7 +516,7 @@ impl App {
             return;
         };
         page.import = ImportState::Running {
-            stage: "Notenbild laden",
+            stage: "Load score image",
             progress: None,
         };
         let (sender, receiver) = mpsc::channel();
@@ -533,9 +541,9 @@ impl App {
             let event = match job.receiver.try_recv() {
                 Ok(event) => event,
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    JobEvent::Finished(Box::new(Err("Verarbeitung unerwartet beendet.".into())))
-                }
+                Err(mpsc::TryRecvError::Disconnected) => JobEvent::Finished(Box::new(Err(
+                    i18n::tr("Processing ended unexpectedly.").into(),
+                ))),
             };
             if let JobEvent::Pages(pages) = event {
                 self.expand_document(id, pages);
@@ -579,11 +587,13 @@ impl App {
                     self.status_error = matches!(self.page.import, ImportState::Failed(_));
                     self.status = match &self.page.import {
                         ImportState::Failed(error) => format!("{}: {error}", self.page.name),
-                        _ => format!(
-                            "{} bereit: {} Notensysteme, {} Noten",
-                            self.page.name,
-                            self.page.score.staves.len(),
-                            self.page.score.notes.len()
+                        _ => i18n::format(
+                            "{0} ready: {1} staves, {2} notes",
+                            &[
+                                ("0", self.page.name.to_string()),
+                                ("1", format!("{}", self.page.score.staves.len())),
+                                ("2", format!("{}", self.page.score.notes.len())),
+                            ],
                         ),
                     };
                 }
@@ -708,13 +718,17 @@ impl App {
         let mut moved = None;
         let mut add = false;
         egui::TopBottomPanel::top("page_tabs")
-            .frame(egui::Frame::new().fill(context.style().visuals.window_fill).inner_margin(6.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(context.style().visuals.window_fill)
+                    .inner_margin(6.0),
+            )
             .show(context, |ui| {
                 ui.add_enabled_ui(self.pending.is_none(), |ui| {
                     ui.horizontal(|ui| {
                         add = ui
                             .button("+")
-                            .on_hover_text("Bilder, PDF oder TIFF als weitere Seiten hinzufuegen")
+                            .on_hover_text(i18n::tr("Add images, PDF or TIFF as additional pages"))
                             .clicked();
                         egui::ScrollArea::horizontal()
                             .id_salt("page_tab_scroll")
@@ -726,7 +740,10 @@ impl App {
                                             format!(
                                                 "{}…{}",
                                                 page.name.chars().take(14).collect::<String>(),
-                                                page.name.chars().skip(page.name.chars().count() - 13).collect::<String>()
+                                                page.name
+                                                    .chars()
+                                                    .skip(page.name.chars().count() - 13)
+                                                    .collect::<String>()
                                             )
                                         } else {
                                             page.name.clone()
@@ -734,11 +751,19 @@ impl App {
                                         let label = if page.import.ready() {
                                             format!("{} · {name}", index + 1)
                                         } else {
-                                            format!("{} · {name} · {}", index + 1, page.import.label())
+                                            format!(
+                                                "{} · {name} · {}",
+                                                index + 1,
+                                                page.import.label()
+                                            )
                                         };
-                                        let label = egui::RichText::new(label).color(if matches!(page.import, ImportState::Failed(_)) {
-                                            ui.visuals().error_fg_color
-                                        } else { ui.visuals().text_color() });
+                                        let label = egui::RichText::new(label).color(
+                                            if matches!(page.import, ImportState::Failed(_)) {
+                                                ui.visuals().error_fg_color
+                                            } else {
+                                                ui.visuals().text_color()
+                                            },
+                                        );
                                         let response = ui
                                             .push_id(page.id, |ui| {
                                                 ui.add(
@@ -748,15 +773,25 @@ impl App {
                                                 )
                                             })
                                             .inner
-                                            .on_hover_text(format!(
-                                                "{}\n{}\nZiehen, um die Seitenreihenfolge zu aendern",
-                                                page.name,
-                                                match &page.import {
-                                                    ImportState::Running { stage, .. } => *stage,
-                                                    ImportState::Failed(error) => error,
-                                                    ImportState::Queued => "Wartet auf Analyse",
-                                                    ImportState::Ready => "Bereit",
-                                                }
+                                            .on_hover_text(i18n::format(
+                                                "{0}\n{1}\nDrag to change page order",
+                                                &[
+                                                    ("0", page.name.to_string()),
+                                                    (
+                                                        "1",
+                                                        (match &page.import {
+                                                            ImportState::Running {
+                                                                stage, ..
+                                                            } => i18n::tr(stage),
+                                                            ImportState::Failed(error) => error,
+                                                            ImportState::Queued => {
+                                                                i18n::tr("Waiting for analysis")
+                                                            }
+                                                            ImportState::Ready => i18n::tr("Ready"),
+                                                        })
+                                                        .to_string(),
+                                                    ),
+                                                ],
                                             ));
                                         if reveal && index == self.active_page {
                                             response.scroll_to_me(Some(egui::Align::Center));
@@ -1136,32 +1171,32 @@ impl App {
             return;
         };
         if let Some(object) = object {
-            if ui.button("Eigenschaften").clicked() {
+            if ui.button(i18n::tr("Properties")).clicked() {
                 self.select_object(Some(object));
                 self.page.canvas_context = None;
                 ui.close();
             }
-            if ui.button("Loeschen").clicked() {
+            if ui.button(i18n::tr("Delete")).clicked() {
                 self.delete_object(object);
                 ui.close();
             }
         } else {
-            ui.strong("Objekt einfuegen");
+            ui.strong(i18n::tr("Insert object"));
             ui.separator();
             if !self.page.score.staves.is_empty() {
-                if ui.button("Note").clicked() {
+                if ui.button(i18n::tr("Note")).clicked() {
                     self.insert_at(position, Insert::Note(Duration::Quarter));
                     ui.close();
                 }
-                if ui.button("Pause").clicked() {
+                if ui.button(i18n::tr("Rest")).clicked() {
                     self.insert_at(position, Insert::Rest(Duration::Quarter));
                     ui.close();
                 }
-                if ui.button("Taktstrich").clicked() {
+                if ui.button(i18n::tr("Barline")).clicked() {
                     self.insert_at(position, Insert::Barline);
                     ui.close();
                 }
-                if ui.button("Tonartwechsel").clicked() {
+                if ui.button(i18n::tr("Key change")).clicked() {
                     self.insert_at(position, Insert::KeyChange);
                     ui.close();
                 }
@@ -1171,11 +1206,11 @@ impl App {
                         ui.close();
                     }
                 }
-                if ui.button("Dynamik").clicked() {
+                if ui.button(i18n::tr("Dynamics")).clicked() {
                     self.insert_at(position, Insert::Dynamic);
                     ui.close();
                 }
-                if ui.button("Taktwechsel").clicked() {
+                if ui.button(i18n::tr("Time change")).clicked() {
                     self.insert_at(position, Insert::TimeChange);
                     ui.close();
                 }
@@ -1187,18 +1222,18 @@ impl App {
                     }
                 }
             } else {
-                ui.weak("Kein Notensystem");
+                ui.weak(i18n::tr("No staff"));
             }
             ui.separator();
             ui.add(
                 egui::DragValue::new(&mut self.page.staff_spacing)
                     .range(6.0..=80.0)
-                    .prefix("Linienabstand: ")
+                    .prefix(i18n::tr("Line spacing: "))
                     .suffix(" px"),
             );
             let fits = position.y + self.page.staff_spacing * 4.0 < self.page.image.height() as f32;
             if ui
-                .add_enabled(fits, egui::Button::new("Notensystem"))
+                .add_enabled(fits, egui::Button::new(i18n::tr("Staff")))
                 .clicked()
             {
                 self.insert_at(position, Insert::Staff);
@@ -1534,7 +1569,11 @@ impl App {
 
     pub fn new(context: &eframe::CreationContext<'_>) -> Self {
         Self::configure_style(&context.egui_ctx);
+        let settings = crate::settings::Settings::load();
+        settings.apply(&context.egui_ctx);
         let mut app = Self {
+            settings,
+            show_settings: false,
             problems: problems::Problems::default(),
             logo_texture: None,
             logo_dark: false,
@@ -1542,7 +1581,7 @@ impl App {
                 LoadedPage {
                     image: recognition::demo_image(),
                     score: Score::default(),
-                    name: "Demonstration".into(),
+                    name: i18n::tr("Demonstration").into(),
                 },
                 0,
             ),
@@ -1562,7 +1601,16 @@ impl App {
             status_error: false,
         };
         app.set_texture(&context.egui_ctx);
-        if cfg!(feature = "ui-screenshot") && std::env::var_os("EFRAME_SCREENSHOT_TO").is_some() {
+        if cfg!(feature = "ui-screenshot") && std::env::var_os("LIBREOMR_SCREENSHOT_TO").is_some() {
+            let language =
+                std::env::var("LIBREOMR_SCREENSHOT_LANGUAGE").unwrap_or_else(|_| "en".into());
+            i18n::set_language(i18n::Language::from_locale(&language));
+            app.settings.language = if i18n::language() == i18n::Language::German {
+                crate::settings::LanguagePreference::German
+            } else {
+                crate::settings::LanguagePreference::English
+            };
+            app.show_settings = std::env::var_os("LIBREOMR_SETTINGS_SCREENSHOT").is_some();
             #[cfg(feature = "ui-screenshot")]
             if let Some(path) = std::env::var_os("LIBREOMR_SCREENSHOT_IMAGE") {
                 let path = PathBuf::from(path);
@@ -1577,8 +1625,14 @@ impl App {
                 app.set_texture(&context.egui_ctx);
             }
             match std::env::var("LIBREOMR_SCREENSHOT_THEME").as_deref() {
-                Ok("dark") => context.egui_ctx.set_theme(egui::ThemePreference::Dark),
-                Ok("light") => context.egui_ctx.set_theme(egui::ThemePreference::Light),
+                Ok("dark") => {
+                    app.settings.theme = crate::settings::Theme::Dark;
+                    context.egui_ctx.set_theme(egui::ThemePreference::Dark);
+                }
+                Ok("light") => {
+                    app.settings.theme = crate::settings::Theme::Light;
+                    context.egui_ctx.set_theme(egui::ThemePreference::Light);
+                }
                 _ => {}
             }
             app.page.score = recognition::recognize(&app.page.image);
@@ -1611,7 +1665,7 @@ impl App {
             if std::env::var_os("LIBREOMR_PROBLEMS_SCREENSHOT").is_some() {
                 app.problems.show = true;
             }
-            app.status = "Demonstration".into();
+            app.status = i18n::tr("Demonstration").into();
             return app;
         }
         let image = app.page.image.clone();
@@ -1620,7 +1674,11 @@ impl App {
             JobMode::ReplaceDocument,
             move |reporter| {
                 let score = reporter.recognize(&image);
-                Ok(Loaded::single(image, score, "Demonstration".into()))
+                Ok(Loaded::single(
+                    image,
+                    score,
+                    i18n::tr("Demonstration").into(),
+                ))
             },
         );
         app
@@ -1666,7 +1724,7 @@ impl App {
         self.page.canvas_context = None;
         self.page.object_drag = None;
         self.status_error = false;
-        self.status = "Verarbeitung laeuft ...".into();
+        self.status = i18n::tr("Processing ...").into();
         std::thread::spawn(move || {
             let result = job(&reporter);
             reporter.send(JobEvent::Finished(Box::new(result)));
@@ -1681,11 +1739,11 @@ impl App {
             match pending.receiver.try_recv() {
                 Ok(JobEvent::Pages(_)) => {}
                 Ok(JobEvent::Status(status)) => {
-                    self.status = status.into();
+                    self.status = i18n::tr(status).into();
                     pending.progress = None;
                 }
                 Ok(JobEvent::Progress(progress)) => {
-                    self.status = progress.stage.into();
+                    self.status = i18n::tr(progress.stage).into();
                     pending.progress = Some(progress);
                 }
                 Ok(JobEvent::Image(image)) => {
@@ -1696,7 +1754,7 @@ impl App {
                 Ok(JobEvent::Finished(result)) => break *result,
                 Err(mpsc::TryRecvError::Empty) => return,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    break Err("Verarbeitung unerwartet beendet.".into());
+                    break Err(i18n::tr("Processing ended unexpectedly.").into());
                 }
             }
         };
@@ -1705,12 +1763,14 @@ impl App {
             Ok(loaded) => {
                 self.apply_loaded(loaded, mode);
                 self.set_texture(context);
-                self.status = format!(
-                    "{} Notensysteme, {} Noten, {} Pausen, {} Taktstriche",
-                    self.page.score.staves.len(),
-                    self.page.score.notes.len(),
-                    self.page.score.rests.len(),
-                    self.page.score.barlines.len()
+                self.status = i18n::format(
+                    "{0} staves, {1} notes, {2} rests, {3} barlines",
+                    &[
+                        ("0", format!("{}", self.page.score.staves.len())),
+                        ("1", format!("{}", self.page.score.notes.len())),
+                        ("2", format!("{}", self.page.score.rests.len())),
+                        ("3", format!("{}", self.page.score.barlines.len())),
+                    ],
                 );
             }
             Err(error) => {
@@ -1724,8 +1784,8 @@ impl App {
     fn confirm_discard(&self) -> bool {
         !self.dirty
             || rfd::MessageDialog::new()
-                .set_title("Ungespeicherte Aenderungen")
-                .set_description("Aenderungen verwerfen?")
+                .set_title(i18n::tr("Unsaved changes"))
+                .set_description(i18n::tr("Discard changes?"))
                 .set_buttons(rfd::MessageButtons::YesNo)
                 .show()
                 == rfd::MessageDialogResult::Yes
@@ -1784,12 +1844,12 @@ impl App {
     fn pick_images(&mut self, context: &egui::Context, mode: JobMode) {
         let Some(paths) = rfd::FileDialog::new()
             .set_title(if matches!(mode, JobMode::AppendPages) {
-                "Seiten hinzufuegen"
+                i18n::tr("Add pages")
             } else {
-                "Bilder und Dokumente oeffnen"
+                i18n::tr("Open images and documents")
             })
             .add_filter(
-                "Notenbilder und Dokumente",
+                i18n::tr("Score images and documents"),
                 &["pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp"],
             )
             .pick_files()
@@ -1811,7 +1871,7 @@ impl App {
     fn load_source(source: ImportSource, reporter: &JobReporter) -> Result<Loaded, String> {
         let page = match source {
             ImportSource::File(path) => {
-                reporter.send(JobEvent::Status("Dokumentseiten ermitteln"));
+                reporter.send(JobEvent::Status(i18n::tr("Discover document pages")));
                 let pages = open_document(&path)?;
                 let first = pages[0].clone();
                 reporter.send(JobEvent::Pages(pages));
@@ -1819,7 +1879,7 @@ impl App {
             }
             ImportSource::Page(page) => page,
         };
-        reporter.send(JobEvent::Status("Seite laden und rasterisieren"));
+        reporter.send(JobEvent::Status(i18n::tr("Load and rasterize page")));
         let image = page.render()?;
         let image = reporter.straighten(image);
         let score = reporter.recognize(&image);
@@ -1831,13 +1891,13 @@ impl App {
             return;
         }
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("libreOMR-Projekt", &["json"])
+            .add_filter(i18n::tr("libreOMR project"), &["json"])
             .pick_file()
         else {
             return;
         };
         self.start_job(context, JobMode::ReplaceDocument, move |reporter| {
-            reporter.send(JobEvent::Status("Projekt laden"));
+            reporter.send(JobEvent::Status(i18n::tr("Load project")));
             Self::read_project(&path)
         });
     }
@@ -1848,7 +1908,7 @@ impl App {
             .len()
             > 256 * 1024 * 1024
         {
-            return Err("Projekt ist groesser als 256 MiB.".into());
+            return Err(i18n::tr("Project is larger than 256 MiB.").into());
         }
         let project =
             ProjectDocument::from_json(&std::fs::read(path).map_err(|error| error.to_string())?)?;
@@ -1859,7 +1919,15 @@ impl App {
                     .with_guessed_format()
                     .map_err(|error| error.to_string())?,
             )
-            .map_err(|error| format!("Seite {}: {error}", index + 1))?;
+            .map_err(|error| {
+                i18n::format(
+                    "Page {0}: {error}",
+                    &[
+                        ("0", format!("{}", index + 1)),
+                        ("error", error.to_string()),
+                    ],
+                )
+            })?;
             pages.push(LoadedPage {
                 image,
                 score: page.score,
@@ -1877,9 +1945,15 @@ impl App {
         let mut pages = Vec::with_capacity(self.pages.len());
         for index in 0..self.pages.len() {
             let page = self.page_at(index);
-            page.score
-                .validate()
-                .map_err(|error| format!("Seite {}: {error}", index + 1))?;
+            page.score.validate().map_err(|error| {
+                i18n::format(
+                    "Page {0}: {error}",
+                    &[
+                        ("0", format!("{}", index + 1)),
+                        ("error", error.to_string()),
+                    ],
+                )
+            })?;
             let mut png = Cursor::new(Vec::new());
             DynamicImage::ImageLuma8(page.image.clone())
                 .write_to(&mut png, ImageFormat::Png)
@@ -1901,8 +1975,8 @@ impl App {
         }
         let path = self.project_path.clone().or_else(|| {
             rfd::FileDialog::new()
-                .add_filter("libreOMR-Projekt", &["json"])
-                .set_file_name("partitur.libreomr.json")
+                .add_filter(i18n::tr("libreOMR project"), &["json"])
+                .set_file_name("score.libreomr.json")
                 .save_file()
         });
         let Some(path) = path else {
@@ -1912,7 +1986,7 @@ impl App {
             let project = self.project_document()?;
             let bytes = serde_json::to_vec(&project).map_err(|error| error.to_string())?;
             if bytes.len() > 256 * 1024 * 1024 {
-                return Err("Projekt ist groesser als 256 MiB.".into());
+                return Err(i18n::tr("Project is larger than 256 MiB.").into());
             }
             let directory = path
                 .parent()
@@ -1936,11 +2010,12 @@ impl App {
             Ok(()) => {
                 self.project_path = Some(path);
                 self.dirty = false;
-                self.status = "Projekt gespeichert.".into();
+                self.status = i18n::tr("Project saved.").into();
                 self.status_error = false;
             }
             Err(error) => {
-                self.status = format!("Speichern fehlgeschlagen: {error}");
+                self.status =
+                    i18n::format("Saving failed: {error}", &[("error", error.to_string())]);
                 self.status_error = true;
             }
         }
@@ -1978,7 +2053,7 @@ impl App {
         let filename = std::path::Path::new(&self.page_at(0).name)
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .unwrap_or("partitur");
+            .unwrap_or("score");
         let Some(path) = rfd::FileDialog::new()
             .add_filter("MusicXML", &["musicxml", "xml"])
             .set_file_name(format!("{filename}.musicxml"))
@@ -1990,12 +2065,17 @@ impl App {
             Ok(warnings) => {
                 self.status_error = false;
                 self.status = if warnings.is_empty() {
-                    format!("MusicXML exportiert: {}", path.display())
+                    i18n::format(
+                        "MusicXML exported: {0}",
+                        &[("0", format!("{}", path.display()))],
+                    )
                 } else {
-                    format!(
-                        "MusicXML exportiert ({} Hinweise): {}",
-                        warnings.len(),
-                        path.display()
+                    i18n::format(
+                        "MusicXML exported ({0} notices): {1}",
+                        &[
+                            ("0", format!("{}", warnings.len())),
+                            ("1", format!("{}", path.display())),
+                        ],
                     )
                 };
                 if !warnings.is_empty() {
@@ -2004,7 +2084,10 @@ impl App {
             }
             Err(error) => {
                 self.show_export_problems();
-                self.status = format!("MusicXML-Export fehlgeschlagen: {error}");
+                self.status = i18n::format(
+                    "MusicXML export failed: {error}",
+                    &[("error", error.to_string())],
+                );
                 self.status_error = true;
             }
         }
@@ -2217,25 +2300,28 @@ impl App {
 
     fn shortcut_help(ui: &mut egui::Ui) {
         ui.menu_button("?", |ui| {
-            ui.strong("Tastenkürzel");
-            ui.label("Zuerst ein Objekt im Scan oder in der Vorschau auswählen.");
+            ui.strong(i18n::tr("Keyboard shortcuts"));
+            ui.label(i18n::tr("First select an object in the scan or preview."));
             ui.separator();
             egui::Grid::new("edit_shortcut_help").show(ui, |ui| {
                 for (duration, key) in DURATION_SHORTCUTS {
                     ui.monospace(key.to_string());
-                    ui.label(format!("{} Note / Pause", duration.label()));
+                    ui.label(i18n::format(
+                        "{0} note / rest",
+                        &[("0", duration.label().to_string())],
+                    ));
                     ui.end_row();
                 }
                 for (key, label) in [
-                    (".", "Note / Pause einfach punktiert"),
-                    (":", "Note / Pause doppelt punktiert"),
-                    ("0", "Ohne Punktierung"),
-                    ("#", "Kreuz (Note)"),
-                    ("b", "Be (Note)"),
-                    ("=", "Auflösungszeichen (Note)"),
-                    ("Entf / Backspace", "Objekt löschen"),
-                    ("F6", "Nächstes ungeprüftes Objekt"),
-                    ("Escape", "Auswahl aufheben"),
+                    (".", i18n::tr("Single-dotted note / rest")),
+                    (":", i18n::tr("Double-dotted note / rest")),
+                    ("0", i18n::tr("No dots")),
+                    ("#", i18n::tr("Sharp (note)")),
+                    ("b", i18n::tr("Flat (note)")),
+                    ("=", i18n::tr("Natural (note)")),
+                    (i18n::tr("Delete / Backspace"), i18n::tr("Delete object")),
+                    ("F6", i18n::tr("Next unreviewed object")),
+                    ("Escape", i18n::tr("Clear selection")),
                 ] {
                     ui.monospace(key);
                     ui.label(label);
@@ -2243,10 +2329,12 @@ impl App {
                 }
             });
             ui.separator();
-            ui.label("Während der Texteingabe sind die Bearbeitungskürzel inaktiv.");
+            ui.label(i18n::tr(
+                "Editing shortcuts are inactive while entering text.",
+            ));
         })
         .response
-        .on_hover_text("Tastenkürzel anzeigen");
+        .on_hover_text(i18n::tr("Show keyboard shortcuts"));
     }
 
     fn show_logo(&mut self, ui: &mut egui::Ui) {
@@ -2346,16 +2434,16 @@ impl App {
                     self.show_logo(ui);
                     ui.separator();
                     ui.add_enabled_ui(self.pending.is_none(), |ui| {
-                        ui.menu_button("Datei", |ui| {
-                            if ui.button("Bild oeffnen").clicked() {
+                        ui.menu_button(i18n::tr("File"), |ui| {
+                            if ui.button(i18n::tr("Open image")).clicked() {
                                 ui.close();
                                 self.open_image(context);
                             }
-                            if ui.button("Seiten hinzufuegen").clicked() {
+                            if ui.button(i18n::tr("Add pages")).clicked() {
                                 ui.close();
                                 self.add_images(context);
                             }
-                            if ui.button("Projekt oeffnen").clicked() {
+                            if ui.button(i18n::tr("Open project")).clicked() {
                                 ui.close();
                                 self.open_project(context);
                             }
@@ -2363,12 +2451,12 @@ impl App {
                                 .add_enabled(
                                     self.document_ready()
                                         && (self.dirty || self.project_path.is_none()),
-                                    egui::Button::new("Speichern"),
+                                    egui::Button::new(i18n::tr("Save")),
                                 )
                                 .on_disabled_hover_text(
-                                    self.require_ready_document().err().unwrap_or_else(|| {
-                                        "Keine ungespeicherten Aenderungen.".into()
-                                    }),
+                                    self.require_ready_document()
+                                        .err()
+                                        .unwrap_or_else(|| i18n::tr("No unsaved changes.").into()),
                                 )
                                 .clicked()
                             {
@@ -2384,11 +2472,11 @@ impl App {
                                                 && (!score.notes.is_empty()
                                                     || !score.rests.is_empty())
                                         }),
-                                    egui::Button::new("MusicXML exportieren"),
+                                    egui::Button::new(i18n::tr("Export MusicXML")),
                                 )
                                 .on_disabled_hover_text(
                                     self.require_ready_document().err().unwrap_or_else(|| {
-                                        "Keine Noten oder Pausen vorhanden.".into()
+                                        i18n::tr("No notes or rests available.").into()
                                     }),
                                 )
                                 .clicked()
@@ -2398,7 +2486,10 @@ impl App {
                             }
                             ui.separator();
                             if ui
-                                .add_enabled(!self.page_busy(), egui::Button::new("Neu erkennen"))
+                                .add_enabled(
+                                    !self.page_busy(),
+                                    egui::Button::new(i18n::tr("Recognize again")),
+                                )
                                 .clicked()
                                 && self.confirm_discard()
                             {
@@ -2411,12 +2502,17 @@ impl App {
                                     Ok(Loaded::single(image, score, name))
                                 });
                             }
-                            if ui.button("Demo laden").clicked() && self.confirm_discard() {
+                            if ui.button(i18n::tr("Load demo")).clicked() && self.confirm_discard()
+                            {
                                 ui.close();
                                 self.start_job(context, JobMode::ReplaceDocument, |reporter| {
                                     let image = recognition::demo_image();
                                     let score = reporter.recognize(&image);
-                                    Ok(Loaded::single(image, score, "Demonstration".into()))
+                                    Ok(Loaded::single(
+                                        image,
+                                        score,
+                                        i18n::tr("Demonstration").into(),
+                                    ))
                                 });
                             }
                         });
@@ -2428,21 +2524,21 @@ impl App {
                     ui.add_enabled_ui(!self.page_busy(), |ui| {
                         if ui
                             .add_enabled(!self.page.undo.is_empty(), egui::Button::new("<"))
-                            .on_hover_text("Rueckgaengig")
+                            .on_hover_text(i18n::tr("Undo"))
                             .clicked()
                         {
                             self.undo();
                         }
                         if ui
                             .add_enabled(!self.page.redo.is_empty(), egui::Button::new(">"))
-                            .on_hover_text("Wiederholen")
+                            .on_hover_text(i18n::tr("Redo"))
                             .clicked()
                         {
                             self.redo();
                         }
                     });
                     ui.separator();
-                    if ui.button("-").on_hover_text("Verkleinern").clicked() {
+                    if ui.button("-").on_hover_text(i18n::tr("Zoom out")).clicked() {
                         self.page.zoom = (self.page.zoom / 1.25).max(0.02);
                         self.page.fit_width = false;
                     }
@@ -2459,20 +2555,26 @@ impl App {
                         self.page.zoom = percent / 100.0;
                         self.page.fit_width = false;
                     }
-                    if ui.button("+").on_hover_text("Vergroessern").clicked() {
+                    if ui.button("+").on_hover_text(i18n::tr("Zoom in")).clicked() {
                         self.page.zoom = (self.page.zoom * 1.25).min(3.0);
                         self.page.fit_width = false;
                     }
                     if ui
-                        .selectable_label(self.page.fit_width, "Einpassen")
-                        .on_hover_text("Seitenbreite einpassen")
+                        .selectable_label(self.page.fit_width, i18n::tr("Fit"))
+                        .on_hover_text(i18n::tr("Fit page width"))
                         .clicked()
                     {
                         self.page.fit_width = true;
                     }
-                    ui.checkbox(&mut self.show_preview, "Vorschau");
+                    ui.checkbox(&mut self.show_preview, i18n::tr("Preview"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        crate::theme::toggle(ui);
+                        if ui
+                            .button(icons::GEAR)
+                            .on_hover_text(i18n::tr("Settings"))
+                            .clicked()
+                        {
+                            self.show_settings = !self.show_settings;
+                        }
                         ui.separator();
                         ui.add(egui::Label::new(&self.page.name).truncate())
                             .on_hover_text(&self.page.name);
@@ -2496,20 +2598,22 @@ impl App {
             )
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong(format!(
-                        "Vorschau - Notensystem {}",
-                        self.page.selected_staff + 1
+                    ui.strong(i18n::format(
+                        "Preview - Staff {0}",
+                        &[("0", format!("{}", self.page.selected_staff + 1))],
                     ));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .button("\u{00d7}")
-                            .on_hover_text("Vorschau ausblenden")
+                            .on_hover_text(i18n::tr("Hide preview"))
                             .clicked()
                         {
                             self.show_preview = false;
                         }
                         ui.toggle_value(&mut self.page.preview.fit_width, icons::ARROWS_HORIZONTAL)
-                            .on_hover_text("Vorschau horizontal einpassen (aus: Originalgroesse)");
+                            .on_hover_text(i18n::tr(
+                                "Fit preview horizontally (off: original size)",
+                            ));
                     });
                 });
                 let selected = self
@@ -2615,7 +2719,7 @@ impl App {
                 });
         }
         if mark.kind == RepeatMarkKind::Ending {
-            ui.label("Endungen (z. B. 1 oder 1,2)");
+            ui.label(i18n::tr("Endings (e.g. 1 or 1,2)"));
             let draft_id = ui.id().with(("ending_numbers", index, &mark.numbers));
             let mut numbers = ui
                 .data(|data| data.get_temp::<String>(draft_id))
@@ -2635,13 +2739,13 @@ impl App {
                 });
             }
             if mark.numbers.is_empty() {
-                ui.weak("Nummer bitte pruefen und ergaenzen.");
+                ui.weak(i18n::tr("Please check and complete the number."));
             }
             changed |= ui
-                .checkbox(&mut mark.closed, "Rechtes Ende geschlossen")
+                .checkbox(&mut mark.closed, i18n::tr("Closed right end"))
                 .changed();
             let staff = &self.page.score.staves[mark.staff];
-            ui.label("Anfang / Ende");
+            ui.label(i18n::tr("Start / end"));
             changed |= ui
                 .add(egui::DragValue::new(&mut mark.x).range(staff.left..=mark.end_x - 1.0))
                 .changed();
@@ -2649,13 +2753,15 @@ impl App {
                 .add(egui::DragValue::new(&mut mark.end_x).range(mark.x + 1.0..=staff.right))
                 .changed();
         }
-        changed |= ui.checkbox(&mut mark.confirmed, "Geprueft").changed();
+        changed |= ui
+            .checkbox(&mut mark.confirmed, i18n::tr("Reviewed"))
+            .changed();
         if changed && mark.valid_numbers() {
             self.snapshot();
             mark.bounds = None;
             self.page.score.repeat_marks[index] = mark;
         }
-        if ui.button("Loeschen").clicked() {
+        if ui.button(i18n::tr("Delete")).clicked() {
             self.delete_object(Object::RepeatMark(index));
         }
     }
@@ -2667,7 +2773,7 @@ impl App {
         let Some(mut dynamic) = self.page.score.dynamics.get(index).cloned() else {
             return;
         };
-        ui.strong("Dynamik");
+        ui.strong(i18n::tr("Dynamics"));
         let previous = dynamic.kind;
         egui::ComboBox::from_id_salt("dynamic_kind")
             .selected_text(dynamic.kind.label())
@@ -2681,12 +2787,14 @@ impl App {
             dynamic.bounds = None;
             dynamic.confirmed = true;
         }
-        changed |= ui.checkbox(&mut dynamic.confirmed, "Geprueft").changed();
+        changed |= ui
+            .checkbox(&mut dynamic.confirmed, i18n::tr("Reviewed"))
+            .changed();
         if changed {
             self.snapshot();
             self.page.score.dynamics[index] = dynamic;
         }
-        if ui.button("Dynamik loeschen").clicked() {
+        if ui.button(i18n::tr("Delete dynamic")).clicked() {
             self.delete_object(Object::Dynamic(index));
         }
     }
@@ -2698,7 +2806,7 @@ impl App {
         let Some(mut change) = self.page.score.time_changes.get(index).cloned() else {
             return;
         };
-        ui.strong("Taktwechsel");
+        ui.strong(i18n::tr("Time change"));
         let previous = change.time_signature;
         egui::ComboBox::from_id_salt("time_change_signature")
             .selected_text(change.time_signature.label())
@@ -2707,12 +2815,12 @@ impl App {
                 ui.selectable_value(
                     &mut change.time_signature,
                     TimeSignature::Cut,
-                    "Alla breve (2/2)",
+                    i18n::tr("Alla breve (2/2)"),
                 );
                 if ui
                     .selectable_label(
                         matches!(change.time_signature, TimeSignature::Meter { .. }),
-                        "Zaehler / Nenner",
+                        i18n::tr("Numerator / denominator"),
                     )
                     .clicked()
                     && !matches!(change.time_signature, TimeSignature::Meter { .. })
@@ -2741,13 +2849,13 @@ impl App {
             change.confirmed = true;
         }
         let confirmed_changed = ui
-            .checkbox(&mut change.confirmed, "Taktwechsel geprueft")
+            .checkbox(&mut change.confirmed, i18n::tr("Time change reviewed"))
             .changed();
         if previous != change.time_signature || confirmed_changed {
             self.snapshot();
             self.page.score.time_changes[index] = change;
         }
-        if ui.button("Taktwechsel loeschen").clicked() {
+        if ui.button(i18n::tr("Delete time change")).clicked() {
             self.delete_object(Object::TimeChange(index));
         }
     }
@@ -2759,10 +2867,10 @@ impl App {
             && index < changes.len()
         {
             ui.horizontal(|ui| {
-                ui.strong("Tonartwechsel");
+                ui.strong(i18n::tr("Key change"));
                 if ui
                     .button("\u{00d7}")
-                    .on_hover_text("Tonartwechsel loeschen")
+                    .on_hover_text(i18n::tr("Delete key change"))
                     .clicked()
                 {
                     changes.remove(index);
@@ -2792,7 +2900,10 @@ impl App {
                     response.response.scroll_to_me(None);
                 }
                 changed |= ui
-                    .checkbox(&mut changes[index].confirmed, "Tonartwechsel geprueft")
+                    .checkbox(
+                        &mut changes[index].confirmed,
+                        i18n::tr("Key change reviewed"),
+                    )
                     .changed();
             }
         }
@@ -2841,14 +2952,18 @@ impl App {
                             });
                         if ui
                             .button("\u{00d7}")
-                            .on_hover_text("Bogen oder Gabel loeschen")
+                            .on_hover_text(i18n::tr("Delete slur, tie or wedge"))
                             .clicked()
                         {
                             remove = Some(index);
                         }
                     });
                     let gabel = matches!(span.kind, SpanKind::Crescendo | SpanKind::Decrescendo);
-                    ui.label(if gabel { "Oeffnung" } else { "Kruemmung" });
+                    ui.label(if gabel {
+                        i18n::tr("Opening")
+                    } else {
+                        i18n::tr("Curvature")
+                    });
                     changed |= ui
                         .add(
                             egui::DragValue::new(&mut span.height)
@@ -2860,11 +2975,15 @@ impl App {
                                 .speed(0.5),
                         )
                         .changed();
-                    ui.strong("Anker");
-                    ui.weak("Endpunkte im Scan oder in der Vorschau ziehen.");
+                    ui.strong(i18n::tr("Anchor"));
+                    ui.weak(i18n::tr("Drag endpoints in the scan or preview."));
                     let mut anchors_changed = false;
                     for right in [false, true] {
-                        ui.label(if right { "Ende" } else { "Anfang" });
+                        ui.label(if right {
+                            i18n::tr("End")
+                        } else {
+                            i18n::tr("Start")
+                        });
                         let (minimum, maximum) = if right {
                             (span.start[0] + 1.0, staff.right)
                         } else {
@@ -2900,7 +3019,9 @@ impl App {
                         span.confirmed = true;
                         changed = true;
                     }
-                    changed |= ui.checkbox(&mut span.confirmed, "Geprueft").changed();
+                    changed |= ui
+                        .checkbox(&mut span.confirmed, i18n::tr("Reviewed"))
+                        .changed();
                     span.start[0] = span.start[0].min(staff.right - 1.0);
                     span.end[0] = span.end[0].max(span.start[0] + 1.0);
                     ui.separator();
@@ -2983,7 +3104,7 @@ impl App {
             !self.page_busy() && !self.page.score.staves.is_empty(),
             |ui| {
                 ui.menu_button(icons::PLUS, |ui| {
-                    if ui.button("Taktstrich").clicked() {
+                    if ui.button(i18n::tr("Barline")).clicked() {
                         let staff = &self.page.score.staves[self.page.selected_staff];
                         let bar = Barline {
                             staff: self.page.selected_staff,
@@ -2999,7 +3120,7 @@ impl App {
                         )));
                         ui.close();
                     }
-                    if ui.button("Tonartwechsel").clicked() {
+                    if ui.button(i18n::tr("Key change")).clicked() {
                         let staff = &self.page.score.staves[self.page.selected_staff];
                         let x = self
                             .page
@@ -3034,7 +3155,7 @@ impl App {
                             ui.close();
                         }
                     }
-                    if ui.button("Dynamik").clicked() {
+                    if ui.button(i18n::tr("Dynamics")).clicked() {
                         let staff = &self.page.score.staves[self.page.selected_staff];
                         let x = self
                             .page
@@ -3048,7 +3169,7 @@ impl App {
                         );
                         ui.close();
                     }
-                    if ui.button("Taktwechsel").clicked() {
+                    if ui.button(i18n::tr("Time change")).clicked() {
                         let staff = &self.page.score.staves[self.page.selected_staff];
                         let x = self
                             .page
@@ -3078,7 +3199,7 @@ impl App {
                     }
                 })
                 .response
-                .on_hover_text("Objekt hinzufuegen");
+                .on_hover_text(i18n::tr("Add object"));
             },
         );
     }
@@ -3090,19 +3211,29 @@ impl App {
                 (
                     icons::MUSIC_NOTE,
                     format!("{}   {}", note.pitch_label(), note.duration_label()),
-                    format!("Note {} - {}", note.pitch_label(), note.duration_label()),
+                    i18n::format(
+                        "Note {0} - {1}",
+                        &[
+                            ("0", note.pitch_label().to_string()),
+                            ("1", note.duration_label().to_string()),
+                        ],
+                    ),
                 )
             }
             Object::Rest(index) => {
                 let value = self.page.score.rests[index].duration_label();
-                (icons::PAUSE, value.clone(), format!("Pause {value}"))
+                (
+                    icons::PAUSE,
+                    value.clone(),
+                    i18n::format("Rest {value}", &[("value", value.to_string())]),
+                )
             }
             Object::Barline(index) => {
                 let kind = self.page.score.barlines[index].kind.label();
                 (
                     icons::LINE_VERTICAL,
                     kind.to_owned(),
-                    format!("Taktstrich - {kind}"),
+                    i18n::format("Barline - {kind}", &[("kind", kind.to_string())]),
                 )
             }
             Object::Span(index) => {
@@ -3111,14 +3242,18 @@ impl App {
             }
             Object::KeyChange(index) => {
                 let key = self.page.score.key_changes[index].key_signature.label();
-                (icons::HASH, key.clone(), format!("Tonartwechsel {key}"))
+                (
+                    icons::HASH,
+                    key.clone(),
+                    i18n::format("Key change {key}", &[("key", key.to_string())]),
+                )
             }
             Object::Dynamic(index) => {
                 let label = self.page.score.dynamics[index].kind.label();
                 (
                     icons::MUSIC_NOTE,
                     label.to_owned(),
-                    format!("Dynamik {label}"),
+                    i18n::format("Dynamic {label}", &[("label", label.to_string())]),
                 )
             }
             Object::RepeatMark(index) => {
@@ -3127,7 +3262,11 @@ impl App {
             }
             Object::TimeChange(index) => {
                 let meter = self.page.score.time_changes[index].time_signature.label();
-                (icons::CLOCK, meter.clone(), format!("Taktwechsel {meter}"))
+                (
+                    icons::CLOCK,
+                    meter.clone(),
+                    i18n::format("Time change {meter}", &[("meter", meter.to_string())]),
+                )
             }
         };
         let confirmed = self.is_confirmed(object);
@@ -3180,9 +3319,9 @@ impl App {
                 }
                 if response
                     .on_hover_text(if confirmed {
-                        "Geprueft - als ungeprueft markieren"
+                        i18n::tr("Reviewed - mark as unreviewed")
                     } else {
-                        "Als geprueft markieren"
+                        i18n::tr("Mark as reviewed")
                     })
                     .clicked()
                 {
@@ -3232,18 +3371,21 @@ impl App {
                     Object::RepeatMark(index) => self.page.score.repeat_marks[index].staff == staff,
                 })
                 .collect();
-            egui::CollapsingHeader::new(format!("Notensystem {} ({})", staff + 1, row.len()))
-                .id_salt(("objects_staff", staff))
-                .default_open(staff == self.page.selected_staff)
-                .open(
-                    (self.page.reveal_selection && staff == self.page.selected_staff)
-                        .then_some(true),
-                )
-                .show(ui, |ui| {
-                    for object in row {
-                        self.object_row(ui, object);
-                    }
-                });
+            egui::CollapsingHeader::new(i18n::format(
+                "Staff {0} ({1})",
+                &[
+                    ("0", format!("{}", staff + 1)),
+                    ("1", format!("{}", row.len())),
+                ],
+            ))
+            .id_salt(("objects_staff", staff))
+            .default_open(staff == self.page.selected_staff)
+            .open((self.page.reveal_selection && staff == self.page.selected_staff).then_some(true))
+            .show(ui, |ui| {
+                for object in row {
+                    self.object_row(ui, object);
+                }
+            });
         }
     }
 
@@ -3262,11 +3404,11 @@ impl App {
             Object::RepeatMark(index) => crate::preview::Selection::RepeatMark(index),
         };
         ui.horizontal_wrapped(|ui| {
-            ui.weak("Objektvorschau");
+            ui.weak(i18n::tr("Object preview"));
             ui.weak(if self.is_confirmed(object) {
-                "Geprueft"
+                i18n::tr("Reviewed")
             } else {
-                "Ungeprueft"
+                i18n::tr("Unreviewed")
             });
         });
         let height = (ui.available_height() * 0.28).clamp(100.0, 160.0);
@@ -3287,10 +3429,14 @@ impl App {
 
     fn dot_editor(ui: &mut egui::Ui, dots: &mut u8) -> bool {
         let changed = ui
-            .add(egui::DragValue::new(dots).range(0..=2).prefix("Punkte: "))
-            .on_hover_text("Punktierung: 0 = ohne, . = einfach, : = doppelt")
+            .add(
+                egui::DragValue::new(dots)
+                    .range(0..=2)
+                    .prefix(i18n::tr("Dots: ")),
+            )
+            .on_hover_text(i18n::tr("Dots: 0 = none, . = single, : = double"))
             .changed();
-        ui.small("Tasten: . einfach · : doppelt · 0 ohne");
+        ui.small(i18n::tr("Keys: . single · : double · 0 none"));
         changed
     }
 
@@ -3314,13 +3460,13 @@ impl App {
                 ui.spacing_mut().combo_width = 140.0_f32.min(ui.available_width());
                 ui.spacing_mut().text_edit_width = ui.available_width();
                 ui.horizontal(|ui| {
-                    ui.heading("Korrektur");
+                    ui.heading(i18n::tr("Correction"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if !self.page.show_object_list
                             && ui
                                 .button(icons::X)
                                 .on_hover_text(
-                                    "Details schliessen und zur Uebersicht zurueck (Escape)",
+                                    i18n::tr("Close details and return to overview (Escape)"),
                                 )
                                 .clicked()
                         {
@@ -3341,13 +3487,13 @@ impl App {
                         .desired_width((ui.available_width() - 40.0).max(40.0))
                         .text(format!("{confirmed} / {total}")),
                     )
-                    .on_hover_text("Gepruefte Symbole");
+                    .on_hover_text(i18n::tr("Reviewed symbols"));
                     if ui
                         .add_enabled(
                             !self.page_busy() && confirmed < total,
                             egui::Button::new(icons::ARROW_RIGHT).min_size(Vec2::splat(30.0)),
                         )
-                        .on_hover_text("Naechste offene Korrektur (F6)")
+                        .on_hover_text(i18n::tr("Next open correction (F6)"))
                         .clicked()
                     {
                         self.next_unchecked();
@@ -3362,24 +3508,24 @@ impl App {
                         if compact_tabs {
                             icons::LIST_BULLETS.to_owned()
                         } else {
-                            format!("{}  Objekte", icons::LIST_BULLETS)
+                            i18n::format("{0}  Objects", &[("0", icons::LIST_BULLETS.to_string())])
                         },
                     )
-                    .on_hover_text("Objekte");
+                    .on_hover_text(i18n::tr("Objects"));
                     ui.selectable_value(
                         &mut self.page.show_object_list,
                         false,
                         if compact_tabs {
                             icons::SLIDERS_HORIZONTAL.to_owned()
                         } else {
-                            format!("{}  Details", icons::SLIDERS_HORIZONTAL)
+                            i18n::format("{0}  Details", &[("0", icons::SLIDERS_HORIZONTAL.to_string())])
                         },
                     )
-                    .on_hover_text("Details");
+                    .on_hover_text(i18n::tr("Details"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.page.show_object_list {
                             ui.toggle_value(&mut self.only_current_staff, icons::FUNNEL)
-                                .on_hover_text("Nur aktuelles System");
+                                .on_hover_text(i18n::tr("Current staff only"));
                         }
                     });
                 });
@@ -3399,16 +3545,13 @@ impl App {
                                     self.page.selected_staff.min(self.page.score.staves.len() - 1);
                                 let previous_staff = self.page.selected_staff;
                                 egui::ComboBox::from_id_salt("selected_staff")
-                                    .selected_text(format!(
-                                        "Notensystem {}",
-                                        self.page.selected_staff + 1
-                                    ))
+                                    .selected_text(i18n::format("Staff {0}", &[("0", format!("{}", self.page.selected_staff + 1))]))
                                     .show_ui(ui, |ui| {
                                         for index in 0..self.page.score.staves.len() {
                                             ui.selectable_value(
                                                 &mut self.page.selected_staff,
                                                 index,
-                                                format!("Notensystem {}", index + 1),
+                                                i18n::format("Staff {0}", &[("0", format!("{}", index + 1))]),
                                             );
                                         }
                                     });
@@ -3416,14 +3559,14 @@ impl App {
                                     self.select_object(None);
                                     self.page.reveal_selection = true;
                                 }
-                                egui::CollapsingHeader::new("Systemangaben")
+                                egui::CollapsingHeader::new(i18n::tr("Staff information"))
                                     .default_open(false)
                                     .open(self.problems.open_system.then_some(true))
                                     .show(ui, |ui| {
                                         let mut header =
                                             self.page.score.staves[self.page.selected_staff].header.clone();
                                         let previous_header = header.clone();
-                                        Self::inspector_combo(ui, "Schluessel")
+                                        Self::inspector_combo(ui, i18n::tr("Clef"))
                                             .selected_text(header.clef.label())
                                             .show_ui(ui, |ui| {
                                                 for clef in Clef::ALL {
@@ -3435,22 +3578,22 @@ impl App {
                                                 }
                                             });
                                         if header.clef == Clef::Unknown {
-                                            ui.label("Tonhoehenbasis: Violin (Annahme)");
+                                            ui.label(i18n::tr("Pitch reference: treble (assumed)"));
                                         }
-                                        ui.label("Vorzeichnung");
+                                        ui.label(i18n::tr("Key signature"));
                                         egui::ComboBox::from_id_salt("key_signature")
                                             .width(ui.available_width())
                                             .selected_text(
                                                 header
                                                     .key_signature
                                                     .map(KeySignature::label)
-                                                    .unwrap_or_else(|| "Nicht erkannt".into()),
+                                                    .unwrap_or_else(|| i18n::tr("Not recognized").into()),
                                             )
                                             .show_ui(ui, |ui| {
                                                 ui.selectable_value(
                                                     &mut header.key_signature,
                                                     None,
-                                                    "Nicht erkannt",
+                                                    i18n::tr("Not recognized"),
                                                 );
                                                 for fifths in -7..=7 {
                                                     let key = KeySignature { fifths };
@@ -3461,18 +3604,18 @@ impl App {
                                                     );
                                                 }
                                             });
-                                        Self::inspector_combo(ui, "Taktangabe")
+                                        Self::inspector_combo(ui, i18n::tr("Time signature"))
                                             .selected_text(
                                                 header
                                                     .time_signature
                                                     .map(TimeSignature::label)
-                                                    .unwrap_or_else(|| "Nicht erkannt".into()),
+                                                    .unwrap_or_else(|| i18n::tr("Not recognized").into()),
                                             )
                                             .show_ui(ui, |ui| {
                                                 ui.selectable_value(
                                                     &mut header.time_signature,
                                                     None,
-                                                    "Nicht erkannt",
+                                                    i18n::tr("Not recognized"),
                                                 );
                                                 for meter in
                                                     [TimeSignature::Common, TimeSignature::Cut]
@@ -3489,7 +3632,7 @@ impl App {
                                                             header.time_signature,
                                                             Some(TimeSignature::Meter { .. })
                                                         ),
-                                                        "Numerisch",
+                                                        i18n::tr("Numeric"),
                                                     )
                                                     .clicked()
                                                     && !matches!(
@@ -3526,7 +3669,7 @@ impl App {
                                         }
                                         ui.checkbox(
                                             &mut header.confirmed,
-                                            "Systemangaben geprueft",
+                                            i18n::tr("Staff information reviewed"),
                                         );
                                         if header != previous_header {
                                             self.snapshot();
@@ -3553,10 +3696,10 @@ impl App {
                                     for index in indices {
                                         ui.push_id(index, |ui| {
                                             ui.horizontal(|ui| {
-                                                ui.strong("Taktstrich");
+                                                ui.strong(i18n::tr("Barline"));
                                                 if ui
                                                     .button("\u{00d7}")
-                                                    .on_hover_text("Taktstrich loeschen")
+                                                    .on_hover_text(i18n::tr("Delete barline"))
                                                     .clicked()
                                                 {
                                                     remove = Some(index);
@@ -3583,7 +3726,7 @@ impl App {
                                                 response.response.scroll_to_me(None);
                                             }
                                             changed |= ui
-                                                .checkbox(&mut bars[index].confirmed, "Geprueft")
+                                                .checkbox(&mut bars[index].confirmed, i18n::tr("Reviewed"))
                                                 .changed();
                                         });
                                     }
@@ -3643,27 +3786,27 @@ impl App {
                                     ui.add(
                                         egui::DragValue::new(&mut octave)
                                             .range(0..=9)
-                                            .prefix("Oktave: "),
+                                            .prefix(i18n::tr("Octave: ")),
                                     );
                                     let pitch = octave * 7 + degree;
                                     changed |= pitch != note.pitch;
                                     note.pitch = pitch;
                                 });
-                                Self::inspector_combo(ui, "Vorzeichen")
+                                Self::inspector_combo(ui, i18n::tr("Accidental"))
                                     .selected_text(if !note.accidental_explicit {
-                                        "Automatisch"
+                                        i18n::tr("Automatic")
                                     } else {
                                         match note.accidental {
                                             -1 => "b",
                                             1 => "#",
-                                            _ => "Natuerlich",
+                                            _ => i18n::tr("Natural"),
                                         }
                                     })
                                     .show_ui(ui, |ui| {
                                         if ui
                                             .selectable_label(
                                                 !note.accidental_explicit,
-                                                "Automatisch",
+                                                i18n::tr("Automatic"),
                                             )
                                             .clicked()
                                         {
@@ -3671,7 +3814,7 @@ impl App {
                                             changed = true;
                                         }
                                         for (value, label) in
-                                            [(-1, "b  [b]"), (0, "Natuerlich  [=]"), (1, "#  [#]")]
+                                            [(-1, "b  [b]"), (0, i18n::tr("Natural  [=]")), (1, "#  [#]")]
                                         {
                                             if ui
                                                 .selectable_label(
@@ -3687,7 +3830,7 @@ impl App {
                                             }
                                         }
                                     });
-                                Self::inspector_combo(ui, "Notenwert")
+                                Self::inspector_combo(ui, i18n::tr("Note value"))
                                     .selected_text(duration_shortcut_label(note.duration))
                                     .show_ui(ui, |ui| {
                                         for duration in Duration::ALL {
@@ -3702,7 +3845,7 @@ impl App {
                                     });
                                 changed |= Self::dot_editor(ui, &mut note.dots);
                                 let mut use_tuplet = note.tuplet_ratio().is_some();
-                                if ui.checkbox(&mut use_tuplet, "n-Tole").changed() {
+                                if ui.checkbox(&mut use_tuplet, i18n::tr("Tuplet")).changed() {
                                     note.tuplet = use_tuplet.then(Tuplet::default);
                                     note.triplet = false;
                                     changed = true;
@@ -3711,8 +3854,8 @@ impl App {
                                     let mut ratio = note.tuplet_ratio().unwrap_or_default();
                                     ui.horizontal_wrapped(|ui| {
                                         let actual_changed = ui.add(egui::DragValue::new(&mut ratio.actual)
-                                            .range(2..=64).prefix("Noten: ")).changed();
-                                        ui.label("in der Zeit von");
+                                            .range(2..=64).prefix(i18n::tr("Notes: "))).changed();
+                                        ui.label(i18n::tr("in the time of"));
                                         let normal_changed = ui.add(egui::DragValue::new(&mut ratio.normal)
                                             .range(1..=64)).changed();
                                         if actual_changed || normal_changed {
@@ -3721,16 +3864,16 @@ impl App {
                                             changed = true;
                                         }
                                     });
-                                    ui.small("z. B. Triole 3:2, Quintole 5:4, Septole 7:4");
+                                    ui.small(i18n::tr("e.g. triplet 3:2, quintuplet 5:4, septuplet 7:4"));
                                 }
-                                if ui.checkbox(&mut note.grace, "Vorschlagsnote").on_hover_text(
-                                    "Zählt nicht zur Taktdauer. Der Notenwert bestimmt die Darstellung."
+                                if ui.checkbox(&mut note.grace, i18n::tr("Grace note")).on_hover_text(
+                                    i18n::tr("Does not count towards measure duration. The note value determines its appearance.")
                                 ).changed() {
                                     if note.grace { note.small = true; }
                                     changed = true;
                                 }
-                                changed |= ui.checkbox(&mut note.small, "Kleine Notenköpfe").changed();
-                                Self::inspector_combo(ui, "Artikulation")
+                                changed |= ui.checkbox(&mut note.small, i18n::tr("Small noteheads")).changed();
+                                Self::inspector_combo(ui, i18n::tr("Articulation"))
                                     .selected_text(note.articulation.label())
                                     .show_ui(ui, |ui| {
                                         for articulation in Articulation::ALL {
@@ -3743,7 +3886,7 @@ impl App {
                                                 .changed();
                                         }
                                     });
-                                changed |= ui.checkbox(&mut note.confirmed, "Geprueft").changed();
+                                changed |= ui.checkbox(&mut note.confirmed, i18n::tr("Reviewed")).changed();
                                 if changed {
                                     self.snapshot();
                                     if note.pitch != self.page.score.notes[index].pitch {
@@ -3755,7 +3898,7 @@ impl App {
                                 }
                                 if ui
                                     .button("\u{00d7}")
-                                    .on_hover_text("Note loeschen (Entf / Backspace)")
+                                    .on_hover_text(i18n::tr("Delete note (Delete / Backspace)"))
                                     .clicked()
                                 {
                                     self.snapshot();
@@ -3770,10 +3913,10 @@ impl App {
                                 .filter(|&index| index < self.page.score.rests.len())
                             {
                                 let mut rest = self.page.score.rests[index].clone();
-                                ui.heading("Pause");
+                                ui.heading(i18n::tr("Rest"));
                                 let mut changed = false;
                                 let mut multiple = rest.measures.is_some();
-                                if ui.checkbox(&mut multiple, "Mehrtaktpause").changed() {
+                                if ui.checkbox(&mut multiple, i18n::tr("Multimeasure rest")).changed() {
                                     rest.measures = multiple.then_some(2);
                                     if multiple {
                                         rest.duration = Duration::Whole;
@@ -3783,13 +3926,13 @@ impl App {
                                 }
                                 if let Some(count) = &mut rest.measures {
                                     ui.horizontal(|ui| {
-                                        ui.label("Takte");
+                                        ui.label(i18n::tr("Measures"));
                                         changed |= ui
                                             .add(egui::DragValue::new(count).range(2..=99))
                                             .changed();
                                     });
                                 } else {
-                                    Self::inspector_combo(ui, "Pausenwert")
+                                    Self::inspector_combo(ui, i18n::tr("Rest value"))
                                         .selected_text(duration_shortcut_label(rest.duration))
                                         .show_ui(ui, |ui| {
                                             for duration in Duration::ALL {
@@ -3804,14 +3947,14 @@ impl App {
                                         });
                                     changed |= Self::dot_editor(ui, &mut rest.dots);
                                 }
-                                changed |= ui.checkbox(&mut rest.confirmed, "Geprueft").changed();
+                                changed |= ui.checkbox(&mut rest.confirmed, i18n::tr("Reviewed")).changed();
                                 if changed {
                                     self.snapshot();
                                     self.page.score.rests[index] = rest;
                                 }
                                 if ui
                                     .button("\u{00d7}")
-                                    .on_hover_text("Pause loeschen (Entf / Backspace)")
+                                    .on_hover_text(i18n::tr("Delete rest (Delete / Backspace)"))
                                     .clicked()
                                 {
                                     self.snapshot();
@@ -3830,7 +3973,7 @@ impl App {
             (self.status.as_str(), pending.progress)
         } else {
             match &self.page.import {
-                ImportState::Queued => ("Wartet auf Analyse", None),
+                ImportState::Queued => (i18n::tr("Waiting for analysis"), None),
                 ImportState::Running { stage, progress } => (*stage, *progress),
                 _ => return,
             }
@@ -3855,23 +3998,38 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             ui.strong(if progress.is_some() {
-                                "Erkennung laeuft"
+                                i18n::tr("Recognition in progress")
                             } else {
-                                "Verarbeitung laeuft"
+                                i18n::tr("Processing")
                             });
                         });
-                        ui.add(egui::Label::new(status).wrap());
+                        ui.add(egui::Label::new(i18n::tr(status)).wrap());
                         if let Some(progress) = progress {
                             if let Some((current, total)) = progress.staff {
-                                ui.weak(format!("System {current} von {total}"));
+                                ui.weak(i18n::format(
+                                    "Staff {current} of {total}",
+                                    &[
+                                        ("current", format!("{}", current)),
+                                        ("total", format!("{}", total)),
+                                    ],
+                                ));
                             }
                             ui.add(
                                 egui::ProgressBar::new(progress.fraction())
                                     .desired_width(ui.available_width())
-                                    .text(format!(
-                                        "Schritt {} von {}",
-                                        (progress.completed_steps + 1).min(progress.total_steps),
-                                        progress.total_steps
+                                    .text(i18n::format(
+                                        "Step {0} of {1}",
+                                        &[
+                                            (
+                                                "0",
+                                                format!(
+                                                    "{}",
+                                                    (progress.completed_steps + 1)
+                                                        .min(progress.total_steps)
+                                                ),
+                                            ),
+                                            ("1", format!("{}", progress.total_steps)),
+                                        ],
                                     )),
                             );
                         }
@@ -3896,13 +4054,16 @@ impl App {
                 if let ImportState::Failed(error) = &self.page.import {
                     let error = error.clone();
                     ui.vertical_centered(|ui| {
-                        ui.heading("Seite konnte nicht geladen werden");
+                        ui.heading(i18n::tr("Could not load page"));
                         ui.add(egui::Label::new(error).wrap());
-                        if ui.button("Erneut versuchen").clicked() {
+                        if ui.button(i18n::tr("Try again")).clicked() {
                             self.retry_import();
                         }
                         if ui
-                            .add_enabled(self.pages.len() > 1, egui::Button::new("Seite entfernen"))
+                            .add_enabled(
+                                self.pages.len() > 1,
+                                egui::Button::new(i18n::tr("Remove page")),
+                            )
                             .clicked()
                         {
                             self.remove_failed_page();
@@ -4043,8 +4204,8 @@ impl App {
                                 Color32::from_rgb(0, 105, 125)
                             };
                             let clef_label = match staff.header.clef {
-                                Clef::Bass => "Bass",
-                                Clef::Treble => "Violin",
+                                Clef::Bass => i18n::tr("Bass"),
+                                Clef::Treble => i18n::tr("Treble"),
                                 Clef::Unknown => "?",
                             };
                             let time_label = staff
@@ -4348,9 +4509,9 @@ impl App {
                                     )
                                     .on_hover_cursor(egui::CursorIcon::Grab)
                                     .on_hover_text(if right {
-                                        "Rechter Anker"
+                                        i18n::tr("Right anchor")
                                     } else {
-                                        "Linker Anker"
+                                        i18n::tr("Left anchor")
                                     });
                                 }
                             }
@@ -4393,7 +4554,7 @@ impl App {
                             ui.painter().text(
                                 symbol_rect.center_top() - Vec2::new(0.0, 3.0),
                                 egui::Align2::CENTER_BOTTOM,
-                                format!("P {}", rest.duration_label()),
+                                format!("{} {}", i18n::tr("R"), rest.duration_label()),
                                 egui::FontId::proportional(12.0),
                                 color,
                             );
@@ -4544,17 +4705,48 @@ impl eframe::App for App {
         self.problem_panel(context);
         self.preview(context);
         self.canvas(context);
+        let previous_language = i18n::language();
+        if self.settings.show(context, &mut self.show_settings) {
+            self.settings.apply(context);
+            if i18n::language() != previous_language {
+                self.problems.invalidate();
+                if !self.status_error {
+                    self.status = self
+                        .pending
+                        .as_ref()
+                        .map(|pending| {
+                            i18n::tr(
+                                pending
+                                    .progress
+                                    .map_or("Processing ...", |progress| progress.stage),
+                            )
+                            .to_owned()
+                        })
+                        .unwrap_or_default();
+                }
+            }
+            if let Err(error) = self.settings.save() {
+                self.status = i18n::format("Could not save settings: {error}", &[("error", error)]);
+                self.status_error = true;
+            }
+            context.request_repaint();
+        }
         if self.problems.needs_refresh() && self.pending.is_none() {
             context.request_repaint();
         }
+        #[cfg(feature = "ui-screenshot")]
+        crate::screenshot::capture(context);
     }
 }
 
 #[cfg(test)]
 fn read_image(path: &std::path::Path) -> Result<GrayImage, String> {
-    decode_image(
-        image::ImageReader::open(path).map_err(|error| format!("Bild nicht lesbar: {error}"))?,
-    )
+    decode_image(image::ImageReader::open(path).map_err(|error| {
+        i18n::format(
+            "Cannot read image: {error}",
+            &[("error", format!("{}", error))],
+        )
+    })?)
     .map(recognition::straighten)
 }
 
@@ -6464,6 +6656,8 @@ mod tests {
     pub(super) fn demo_app() -> App {
         let image = recognition::demo_image();
         App {
+            settings: crate::settings::Settings::default(),
+            show_settings: false,
             problems: problems::Problems::default(),
             logo_texture: None,
             logo_dark: false,
@@ -9615,9 +9809,7 @@ mod tests {
             assert!(logo_bounds.max.y <= 54.0);
             assert!(logo_bounds.width() > 4.0 * logo_bounds.height());
             for expected in [
-                icons::SUN,
-                icons::MOON,
-                "Auto",
+                icons::GEAR,
                 "Datei",
                 "Einpassen",
                 "Vorschau",
@@ -9640,9 +9832,7 @@ mod tests {
                     shape.clip_rect
                 );
                 assert!(Rect::from_min_size(Pos2::ZERO, size).contains_rect(bounds));
-                if matches!(expected, "Datei" | "Einpassen" | "Vorschau" | "Auto")
-                    || expected == icons::SUN
-                    || expected == icons::MOON
+                if matches!(expected, "Datei" | "Einpassen" | "Vorschau") || expected == icons::GEAR
                 {
                     assert!(
                         bounds.max.y <= 54.0,

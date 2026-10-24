@@ -65,7 +65,7 @@ impl Issue {
             x: None,
             severity: Severity::Error,
             message,
-            help: "Seite prüfen, fehlende Objekte ergänzen oder erneut erkennen lassen.",
+            help: crate::i18n::tr("Review the page, add missing objects or recognize it again."),
         }
     }
 }

@@ -9,9 +9,14 @@ pub fn validate_dimensions(width: u32, height: u32) -> Result<(), String> {
         || height > MAX_SIDE
         || u64::from(width) * u64::from(height) > MAX_PIXELS
     {
-        return Err(format!(
-            "Bild hat {width} x {height} Pixel. Erlaubt sind mindestens 20 x 20 Pixel, maximal {MAX_SIDE} Pixel pro Kante und maximal {} Megapixel.",
-            MAX_PIXELS / 1_000_000
+        return Err(crate::i18n::format(
+            "Image has {width} x {height} pixels. At least 20 x 20 pixels, at most {MAX_SIDE} pixels per side and at most {0} megapixels are allowed.",
+            &[
+                ("width", format!("{}", width)),
+                ("height", format!("{}", height)),
+                ("MAX_SIDE", format!("{}", MAX_SIDE)),
+                ("0", format!("{}", MAX_PIXELS / 1_000_000)),
+            ],
         ));
     }
     Ok(())

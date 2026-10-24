@@ -1,263 +1,268 @@
 # libreOMR
 
 <p>
-  <img src="assets/libreomr-logo.png" alt="libreOMR – Musiknoten in einem offenen Scanrahmen" width="480">
+  <img src="assets/libreomr-logo.png" alt="libreOMR – music notation in an open scanning frame" width="480">
 </p>
 
-libreOMR ist eine Desktop-Anwendung zur optischen Notenerkennung für Linux,
-Windows und macOS. Sie wandelt Notenbilder in bearbeitbare Erkennungsvorschläge
-um: Partitur laden, Noten und Symbole prüfen, Fehler korrigieren und das
-Ergebnis als MusicXML weiterverwenden. Alle Dateien werden lokal verarbeitet.
+libreOMR is a desktop application for optical music recognition on Linux,
+Windows and macOS. It turns score images into editable recognition proposals:
+open a score, review notes and symbols, correct mistakes and export the result
+as MusicXML. All files are processed locally.
 
-**Das Projekt ist ein früher Prototyp.** Die Erkennung arbeitet mit Heuristiken
-und Symbolvorlagen. Ergebnisse müssen musikalisch geprüft und bei Bedarf
-korrigiert werden.
+**This project is an early prototype.** Recognition uses heuristics and symbol
+templates. Results require musical review and correction.
 
-## Funktionen
+## Features
 
-- PDF, PNG, JPEG, TIFF und BMP importieren; mehrseitige PDFs und TIFFs öffnen.
-- Noten, Pausen, Schlüssel, Vorzeichen und Taktangaben erkennen und bearbeiten.
-- Weitere Symbole wie Artikulationen, Dynamik, Bögen und Wiederholungszeichen
-  prüfen und ergänzen.
-- Originalbild, erkannte Objekte und Notenvorschau direkt vergleichen.
-- Korrekturen rückgängig machen und Projekte mit eingebetteten Notenbildern speichern.
-- Alle Seiten gemeinsam als MusicXML 4.0 exportieren, etwa zur Weiterarbeit in MuseScore.
-- Zwischen hellem und dunklem Design wechseln oder dem Systemdesign folgen.
+- Import PDF, PNG, JPEG, TIFF and BMP, including multipage PDFs and TIFFs.
+- Recognize and edit notes, rests, clefs, accidentals and time signatures.
+- Review and add articulations, dynamics, slurs, ties and repeat marks.
+- Compare the original image, recognized objects and notation preview directly.
+- Undo corrections and save projects with embedded score images.
+- Export all pages together as MusicXML 4.0 for further work in tools such as MuseScore.
+- Use English or German, with the system language selected by default.
+- Choose light, dark or system appearance in Settings.
 
-## Einblicke
+## Screenshots
 
-Die Screenshots zeigen die erste Seite von Bachs **Partita in a-Moll für
-Soloflöte, BWV 1013**, mit dem gemeinfreien Notensatz von Jacob Shapiro aus dem
+The screenshots show the first page of Bach's **Partita in A minor for solo
+flute, BWV 1013**, using Jacob Shapiro's public-domain typesetting from the
 [Mutopia Project](https://www.mutopiaproject.org/cgibin/piece-info.cgi?id=1528).
-Das [Beispiel-PDF](examples/public-domain/bach-bwv1013.pdf) liegt zum Ausprobieren
-bei; [Quelle und Rechteangabe](examples/public-domain/README.md) sind dokumentiert.
-Die dargestellten Vorschläge sind kein fertig korrigiertes Notenergebnis.
+The [sample PDF](examples/public-domain/bach-bwv1013.pdf) is included for trying
+the app; its [source and rights](examples/public-domain/README.md) are documented.
+The proposals shown are not a finished, corrected transcription.
 
-**Notenbild, erkannte Objekte und Vorschau**
+**Score image, recognized objects and preview**
 
-![libreOMR im hellen Design mit Bachs Partita, markierten Erkennungsvorschlägen und Notenvorschau](assets/screenshots/overview.png)
+![libreOMR in light mode showing Bach's Partita, highlighted recognition proposals and notation preview](assets/screenshots/overview.png)
 
-**Einzelne Noten prüfen und korrigieren**
+**Review and correct individual notes**
 
-![Korrekturansicht mit ausgewählter Note, Objektvorschau und bearbeitbaren Eigenschaften](assets/screenshots/correction.png)
+![Correction view with a selected note, object preview and editable properties](assets/screenshots/correction.png)
 
-**Dunkles Design**
+**Dark mode**
 
-![libreOMR im dunklen Design mit heller Notenseite und Korrekturwerkzeugen](assets/screenshots/dark.png)
+![libreOMR in dark mode with a light score page and correction tools](assets/screenshots/dark.png)
 
-## Installation und Start
+**Language and appearance settings**
 
-### Fertige Pakete
+![Settings window with language selection and system, light and dark appearance](assets/screenshots/settings.png)
 
-Veröffentlichte Versionen stehen unter
-[GitHub Releases](https://github.com/kabakakao/libreOMR/releases) bereit:
+## Install and run
 
-Die [Versionshinweise zu 0.1.1](docs/release-notes/0.1.1.md) beschreiben die
-Verbesserungen beim Windows-Start, bei Fehlermeldungen und Anwendungssymbolen.
+### Download a package
 
-| Plattform | Paket |
+Published versions are available from
+[GitHub Releases](https://github.com/kabakakao/libreOMR/releases).
+The [0.1.2 release notes](docs/release-notes/0.1.2.md) describe language selection,
+saved appearance settings and starting Windows without a console window.
+
+| Platform | Package |
 | --- | --- |
-| Windows x86_64 | ZIP mit `libreomr.exe` |
-| Windows ARM64 | ZIP mit nativer ARM64-Version von `libreomr.exe` |
-| Linux x86_64 | TAR.GZ mit `libreomr` |
-| macOS Apple Silicon | ZIP mit `libreOMR.app` |
+| Windows x86_64 | ZIP containing `libreomr.exe` |
+| Windows ARM64 | ZIP containing a native ARM64 `libreomr.exe` |
+| Linux x86_64 | TAR.GZ containing `libreomr` |
+| macOS Apple Silicon | ZIP containing `libreOMR.app` |
 
-Das passende Archiv vollständig entpacken und das Programm starten. Unter
-macOS kann `libreOMR.app` in den Programme-Ordner kopiert werden. Die App ist
-noch nicht signiert oder notarisiert; macOS kann deshalb die Freigabe unter
-**Systemeinstellungen > Datenschutz & Sicherheit** verlangen. Intel-Macs
-werden nicht unterstützt.
+Extract the entire archive for your platform, then start the application.
+On macOS, copy `libreOMR.app` to Applications. The app is not yet signed or
+notarized, so macOS may require approval in **System Settings > Privacy & Security**.
+Intel Macs are not supported.
 
-Die Windows-EXE enthält das Anwendungssymbol für Explorer und Verknüpfungen
-in mehreren Auflösungen. Das macOS-App-Bundle enthält ein Finder-/Dock-Symbol
-einschließlich Retina-Auflösungen.
+The Windows executable starts without a console window and embeds icons at
+multiple resolutions for Explorer and shortcuts. The macOS bundle includes
+Finder and Dock icons with Retina resolutions.
 
-Unter Linux wird eine grafische X11- oder Wayland-Sitzung mit den
-Systembibliotheken für XKB, Wayland und EGL benötigt. Der Dateidialog verwendet
-`xdg-desktop-portal` mit dem zur Desktop-Umgebung passenden Portal-Backend.
+Linux requires a graphical X11 or Wayland session and the system libraries
+for XKB, Wayland and EGL. File dialogs use `xdg-desktop-portal` with a backend
+appropriate for your desktop environment.
 
-Das Linux-Archiv enthält außerdem einen Desktop-Eintrag und Icons für das
-Anwendungsmenü. Nach dem Entpacken an einen dauerhaften Ort lassen sie sich
-ohne Administratorrechte für den aktuellen Benutzer einrichten:
+The Linux archive also includes a desktop entry and application-menu icons.
+Extract it to a permanent location, then run the following from that directory
+to install the menu entry for the current user without administrator privileges
+(Python 3 required):
 
 ```sh
 python3 install-desktop.py
 ```
 
-Den Befehl im entpackten Paketordner ausführen (Python 3 erforderlich).
-Der Menüeintrag startet das Programm aus diesem Ordner. Nach dem Verschieben
-des Ordners den Befehl erneut ausführen. Die Dateien werden unter
-`${XDG_DATA_HOME:-~/.local/share}` in `applications` und `icons/hicolor` abgelegt.
+The entry starts the app from this directory. Run the command again if you move
+the directory. Files are installed in `applications` and `icons/hicolor` under
+`${XDG_DATA_HOME:-~/.local/share}`.
 
-Unter Windows verwendet der Build den mitgelieferten **wgpu-Renderer mit
-Direct3D 12**. Ein zusätzlicher OpenGL-Treiber oder eine separat heruntergeladene
-OpenGL-DLL ist dafür nicht erforderlich. Benötigt werden Windows 10/11 und
-funktionierende Direct3D-12-Unterstützung durch Windows und den Grafiktreiber.
+On Windows, the build includes the **wgpu renderer using Direct3D 12**. No
+additional OpenGL driver or separately downloaded OpenGL DLL is required.
+Windows 10/11 and working Direct3D 12 support in Windows and the graphics driver
+are required.
 
-Falls das Programm beim Start oder im Betrieb einen Fehler meldet, erscheint
-ein nativer Fehlerdialog auch dann, wenn das Hauptfenster noch nicht geöffnet
-werden konnte. Der Dialog enthält die technischen Details und den Pfad zum
-Fehlerbericht. Unter Windows liegt dieser normalerweise unter
-`%LOCALAPPDATA%\libreOMR\error.log`, ersatzweise unter
-`%TEMP%\libreOMR\error.log`. Rust-Panics werden ebenfalls gemeldet und mit einem
-Stacktrace protokolliert. Fehlerberichte können einer Fehlermeldung beigefügt
-werden.
+Startup and runtime errors appear in a native error dialog, even if the main
+window could not open. The dialog includes technical details and the error-report
+path. On Windows this is normally `%LOCALAPPDATA%\libreOMR\error.log`, falling
+back to `%TEMP%\libreOMR\error.log`. Rust panics are also reported and logged
+with a stack trace. Attach the report when filing an issue.
 
-Bei Grafikproblemen zuerst Windows und den Grafiktreiber vom Gerätehersteller
-aktualisieren; in virtuellen Maschinen auch die Gast-Erweiterungen prüfen.
-Als Alternative zu Direct3D 12 kann bei vorhandenem Vulkan-Treiber in PowerShell
-gestartet werden:
+For graphics problems, first update Windows and the graphics driver from your
+device manufacturer; in virtual machines, also check the guest tools. If a
+Vulkan driver is available, you can try this alternative to Direct3D 12 in PowerShell:
 
 ```powershell
 $env:WGPU_BACKEND = 'vulkan'
 .\libreomr.exe
 ```
 
-Die Einstellung gilt für diese PowerShell-Sitzung. Mit
-`Remove-Item Env:WGPU_BACKEND` wird sie zurückgesetzt.
+This setting applies to the current PowerShell session. Clear it with
+`Remove-Item Env:WGPU_BACKEND`.
 
-Jedes Release enthält das öffentliche Bach-Beispiel, Lizenzhinweise und
-SHA-256-Prüfsummen. Alternativ lässt sich libreOMR aus dem Quellcode bauen.
+Each release includes the public Bach example, license notices and SHA-256
+checksums. You can also build libreOMR from source.
 
-### Aus dem Quellcode bauen
+### Build from source
 
-Zum Bauen wird eine [Rust-Toolchain](https://rustup.rs/) ab Version **1.92**
-benötigt. Die folgenden Befehle im Projektordner ausführen.
+Install a [Rust toolchain](https://rustup.rs/) version **1.92** or newer.
+Run the following commands from the project root.
 
-Unter macOS werden außerdem die Xcode Command Line Tools benötigt, unter
-Windows die MSVC-Build-Tools einschließlich Windows SDK. Unter Debian/Ubuntu
-lassen sich die benötigten Systempakete so installieren:
+macOS also requires Xcode Command Line Tools. Windows requires the MSVC build
+tools and Windows SDK. On Debian/Ubuntu, install the system dependencies with:
 
 ```sh
 sudo apt-get install build-essential pkg-config libxkbcommon-dev libwayland-dev libegl1-mesa-dev
 ```
 
-Anwendung bauen und starten:
+Build and run the application:
 
 ```sh
 cargo run --release --locked
 ```
 
-Alternativ nur bauen:
+Or build without running:
 
 ```sh
 cargo build --release --locked
 ```
 
-Das Programm liegt anschließend unter `target/release/libreomr`, unter
-Windows unter `target/release/libreomr.exe`.
-
-Ein lokales macOS-App-Bundle lässt sich so erstellen und öffnen:
+The executable is `target/release/libreomr`, or `target/release/libreomr.exe`
+on Windows. To create and open a local macOS bundle on an Apple Silicon Mac:
 
 ```sh
 sh scripts/build-macos-app.sh
 open target/release/libreOMR.app
 ```
 
-Das Skript setzt einen Mac mit Apple Silicon voraus.
+## Usage
 
-## Nutzung
+### 1. Open a score
 
-### 1. Noten öffnen
+The app starts with a generated score example. Choose **File > Open image**
+and select one or more files. The included
+[Bach example](examples/public-domain/bach-bwv1013.pdf) is a useful starting point.
+PDF and multipage TIFF files get a separate tab for each page. Pages are analyzed
+sequentially in the background.
 
-Beim Start erscheint ein generiertes Notenbeispiel. Über **Datei > Bild oeffnen**
-eine oder mehrere Dateien auswählen. Zum Ausprobieren eignet sich das
-mitgelieferte [Bach-Beispiel](examples/public-domain/bach-bwv1013.pdf).
-PDFs und mehrseitige TIFFs erhalten für jede Seite einen eigenen Reiter.
-Die Seiten werden nacheinander im Hintergrund analysiert.
+Use **File > Add pages**, or the **+** beside the tabs, to add more pages.
+Drag tabs to reorder them; this also determines export order. **Fit**, the zoom
+buttons and the percentage control help you navigate the score image.
 
-Über **Datei > Seiten hinzufuegen** oder das **+** neben den Reitern weitere
-Seiten ergänzen. Reiter lassen sich per Drag-and-drop umordnen; ihre Reihenfolge
-bestimmt auch die Reihenfolge im Export. **Einpassen**, die Zoomtasten und die
-Prozentanzeige helfen bei der Navigation im Notenbild.
+### 2. Review and correct recognition
 
-### 2. Erkennung prüfen und korrigieren
+Select an object in the scan, object list or preview. The **Correction** panel
+on the right lets you edit its properties, such as pitch, accidental, note value,
+dots or articulation. The object preview shows the selected symbol; the notation
+preview below shows the current staff.
 
-Ein Objekt im Notenbild, in der Objektliste oder in der Vorschau auswählen.
-Rechts unter **Korrektur** lassen sich seine Eigenschaften ändern, etwa
-Tonhöhe, Vorzeichen, Notenwert, Punktierung oder Artikulation. Die
-Objektvorschau zeigt das ausgewählte Zeichen; die untere Notenvorschau zeigt
-den aktuellen Stand der Notenzeile.
+Move or delete incorrect objects. Use the score image's context menu to insert
+missing notes, rests and other symbols. Clef, key signature and time signature
+are available under **Staff information**. You can undo and redo changes.
 
-Falsch erkannte Objekte lassen sich verschieben oder löschen. Fehlende Noten,
-Pausen und weitere Symbole über das Kontextmenü im Notenbild ergänzen.
-Schlüssel, Tonart und Taktart stehen in den **Systemangaben**. Änderungen
-lassen sich rückgängig machen und wiederholen.
+Confirm a reviewed object with the circle in the object list. **F6** jumps to
+the next unreviewed object. Confirmation records your review; the rest of the
+score still needs checking.
 
-Ein geprüftes Objekt über den Kreis in der Objektliste bestätigen. **F6**
-springt zum nächsten ungeprüften Objekt. Die Bestätigung dokumentiert die
-eigene Prüfung; sie ersetzt keine Kontrolle der übrigen Partitur.
+### 3. Check measures and export notices
 
-### 3. Takte und Exporthinweise kontrollieren
+Colored measure regions indicate whether the sum of recognized note values
+matches the time signature. Click **Export check** to open the list of problems
+and unreviewed objects. Select an entry to navigate to its location. Correct
+missing information and inconsistent durations before exporting. Pickup measures
+may intentionally be incomplete.
 
-Farbig markierte Taktbereiche zeigen, ob die Summe der erfassten Notenwerte
-zur Taktart passt. Ein Klick auf die **Exportpruefung** öffnet die Liste der
-Probleme und ungeprüften Objekte. Ein Eintrag führt zur betroffenen Stelle.
-Fehlende Angaben und widersprüchliche Dauern vor dem Export korrigieren.
-Auch Auftakte können als unvollständige Takte markiert werden.
+### 4. Save a project
 
-### 4. Projekt speichern
+**File > Save** writes a `.libreomr.json` file containing all pages as embedded
+images, their order and your corrections. Resume with **File > Open project**;
+the original image files are no longer needed.
 
-**Datei > Speichern** schreibt eine `.libreomr.json`-Datei. Sie enthält alle
-Seiten als eingebettete Bilder, ihre Reihenfolge und den Korrekturstand.
-Mit **Datei > Projekt oeffnen** lässt sich die Arbeit später fortsetzen;
-die ursprünglichen Bilddateien werden dafür nicht mehr benötigt.
+**Recognize again** replaces the active page's proposals and corrections. Save
+the current state first if you need to keep it.
 
-**Neu erkennen** ersetzt die bisherigen Erkennungsvorschläge und Korrekturen
-der aktiven Seite. Den bisherigen Stand bei Bedarf vorher speichern.
+### 5. Export MusicXML
 
-### 5. MusicXML exportieren
+**File > Export MusicXML** writes all pages in tab order to a `.musicxml` file.
+Open it in a notation program such as MuseScore for further editing. Saving and
+exporting become available once every page has been analyzed successfully.
 
-**Datei > MusicXML exportieren** schreibt alle Seiten in Reiterreihenfolge in
-eine `.musicxml`-Datei. Diese kann anschließend in einem Notensatzprogramm
-wie MuseScore geöffnet und weiterbearbeitet werden. Speichern und Exportieren
-stehen bereit, sobald alle Seiten erfolgreich analysiert wurden.
+Export uses the current state, including unreviewed objects. Read the notices
+after export and check the result in your notation program. Also save the
+libreOMR project if you want to resume corrections later.
 
-Der Export verwendet den aktuellen Stand einschließlich ungeprüfter Objekte.
-Hinweise nach dem Export beachten und das Ergebnis im Zielprogramm prüfen.
-Ein MusicXML-Export ersetzt nicht das Speichern des libreOMR-Projekts.
+### 6. Choose language and appearance
 
-## Tastenkürzel
+Open **Settings** with the gear button at the top right. **Language** offers
+**System default**, **English** and **Deutsch**. System default uses German for
+German system locales, including Germany, Austria and Switzerland, and English
+for other locales. **Theme** offers **Follow system**, **Light** and **Dark**.
+Both preferences default to the system and take effect immediately. Choices
+are saved automatically for the current user and restored on the next launch.
 
-Unter macOS gilt **Cmd**, unter Linux und Windows **Strg**.
+Settings are separate from score projects and stored in:
 
-| Kürzel | Aktion |
+| Platform | Settings file |
 | --- | --- |
-| Cmd/Strg + O | Notenbilder öffnen |
-| Cmd/Strg + Umschalt + O | Projekt öffnen |
-| Cmd/Strg + S | Projekt speichern |
-| Cmd/Strg + Z | Rückgängig |
-| Cmd/Strg + Umschalt + Z | Wiederholen |
-| F6 | Nächstes ungeprüftes Objekt |
-| Entf / Backspace | Ausgewähltes Objekt löschen |
-| Escape | Kontextmenü schließen oder Auswahl aufheben |
+| Windows | `%APPDATA%\libreOMR\settings.json` |
+| macOS | `~/Library/Application Support/libreOMR/settings.json` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/libreOMR/settings.json` |
 
-Bei ausgewählten Noten und Pausen setzen **1, 2, 4, 8** den ganzen, halben,
-Viertel- oder Achtelwert; **6, 3, 9** stehen für 1/16, 1/32 und 1/64.
-**.** setzt eine einfache, **:** eine doppelte Punktierung; **0** entfernt sie.
-Bei Noten setzen **#**, **b** und **=** ein Kreuz, Be oder Auflösungszeichen.
-Das **?** im Korrekturbereich zeigt die Bearbeitungskürzel an.
+Native file dialogs and operating-system buttons follow the operating system's
+own language. See [Localization](docs/localization.md) for the language-file format
+and instructions for adding translations.
 
-## Aktuelle Grenzen
+## Keyboard shortcuts
 
-libreOMR eignet sich vor allem zum Erproben des Arbeitsablaufs mit klaren,
-gedruckten Einzelstimmen. Schiefe oder beschädigte Scans, enge Balkengruppen,
-ungewohnte Schriften und überlagerte Symbole können zu fehlenden oder falschen
-Erkennungsvorschlägen führen.
+Use **Cmd** on macOS and **Ctrl** on Linux and Windows.
 
-Die Notenzeilen werden beim Export als **eine fortlaufende Stimme** behandelt.
-Eine vollständige Rekonstruktion mehrstimmiger Klavier- oder Orchesterpartituren,
-automatische Instrumentenzuordnung und Transposition sind noch nicht enthalten.
-Die Vorschau zeigt den bearbeiteten Erkennungsstand; Balkengruppen und
-Seitenlayout werden nicht originalgetreu rekonstruiert. Eine fehlerfreie
-Transkription beliebiger Partituren wird derzeit nicht erreicht.
+| Shortcut | Action |
+| --- | --- |
+| Cmd/Ctrl + O | Open score images |
+| Cmd/Ctrl + Shift + O | Open project |
+| Cmd/Ctrl + S | Save project |
+| Cmd/Ctrl + Z | Undo |
+| Cmd/Ctrl + Shift + Z | Redo |
+| F6 | Next unreviewed object |
+| Delete / Backspace | Delete selected object |
+| Escape | Close context menu or clear selection |
 
-## Lizenz
+For selected notes and rests, **1, 2, 4, 8** set whole, half, quarter and eighth
+values; **6, 3, 9** set 1/16, 1/32 and 1/64. **.** adds a single dot, **:** adds
+two dots and **0** removes dots. For notes, **#**, **b** and **=** set a sharp,
+flat or natural. The **?** in the Correction panel shows editing shortcuts.
 
-libreOMR steht unter der **GNU General Public License v3.0 oder später**
-(`GPL-3.0-or-later`); der vollständige Text steht in [LICENSE](LICENSE).
-Bei Weitergabe geänderter Versionen gelten ebenfalls die Bedingungen der GPL.
+## Current limitations
 
-Mitgelieferte Komponenten behalten ihre eigenen Lizenzen. Die Bravura-Schrift
-steht unter der [SIL Open Font License 1.1](assets/Bravura-LICENSE.txt), das
-[Bach-Beispiel](examples/public-domain/README.md) ist gemeinfrei.
+libreOMR is primarily suitable for trying the workflow on clear, printed
+single-part scores. Skewed or damaged scans, dense beaming, unfamiliar fonts
+and overlapping symbols can cause missing or incorrect proposals.
+
+Export treats staves as **one continuous part**. Full reconstruction of
+polyphonic piano or orchestral scores, automatic instrument assignment and
+transposition are not implemented. The preview shows the edited recognition
+state; beaming and page layout are not reconstructed faithfully. Error-free
+transcription of arbitrary scores is not currently achieved.
+
+## License
+
+libreOMR is licensed under the **GNU General Public License v3.0 or later**
+(`GPL-3.0-or-later`); see [LICENSE](LICENSE) for the full text. Modified versions
+must also comply with the GPL when distributed.
+
+Bundled components retain their own licenses. The Bravura font uses the
+[SIL Open Font License 1.1](assets/Bravura-LICENSE.txt), and the
+[Bach example](examples/public-domain/README.md) is public domain.

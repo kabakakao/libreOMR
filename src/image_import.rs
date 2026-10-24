@@ -25,13 +25,20 @@ pub fn decode_image<Reader: std::io::BufRead + std::io::Seek>(
     limits.max_image_height = Some(crate::image_limits::MAX_SIDE);
     limits.max_alloc = Some(crate::image_limits::MAX_DECODE_BYTES);
     reader.limits(limits);
-    let decoder = reader
-        .into_decoder()
-        .map_err(|error| format!("Bild konnte nicht geladen werden: {error}"))?;
+    let decoder = reader.into_decoder().map_err(|error| {
+        crate::i18n::format(
+            "Could not load image: {error}",
+            &[("error", format!("{}", error))],
+        )
+    })?;
     let (width, height) = image::ImageDecoder::dimensions(&decoder);
     crate::image_limits::validate_dimensions(width, height)?;
-    let image = DynamicImage::from_decoder(decoder)
-        .map_err(|error| format!("Bild konnte nicht geladen werden: {error}"))?;
+    let image = DynamicImage::from_decoder(decoder).map_err(|error| {
+        crate::i18n::format(
+            "Could not load image: {error}",
+            &[("error", format!("{}", error))],
+        )
+    })?;
     let mut opaque = image.to_rgba8();
     for pixel in opaque.pixels_mut() {
         let alpha = u16::from(pixel[3]);

@@ -45,10 +45,13 @@ impl DocumentPage {
         if self.document.page_count == 1 {
             name.into_owned()
         } else {
-            format!(
-                "{name} – Seite {} von {}",
-                self.index + 1,
-                self.document.page_count
+            crate::i18n::format(
+                "{name} – Page {0} of {1}",
+                &[
+                    ("name", format!("{}", name)),
+                    ("0", format!("{}", self.index + 1)),
+                    ("1", format!("{}", self.document.page_count)),
+                ],
             )
         }
     }
@@ -60,8 +63,12 @@ impl DocumentPage {
     pub fn render(&self) -> Result<GrayImage, String> {
         let result = match &self.document.kind {
             DocumentKind::Image => decode_image(
-                image::ImageReader::open(&self.document.path)
-                    .map_err(|error| format!("Bild nicht lesbar: {error}"))?,
+                image::ImageReader::open(&self.document.path).map_err(|error| {
+                    crate::i18n::format(
+                        "Cannot read image: {error}",
+                        &[("error", format!("{}", error))],
+                    )
+                })?,
             ),
             DocumentKind::Tiff(offsets) => crate::tiff_import::decode_page(
                 BufReader::new(File::open(&self.document.path).map_err(|error| error.to_string())?),
@@ -75,8 +82,12 @@ impl DocumentPage {
 
 /// Read only page metadata here; expensive image decoding happens in `render`.
 pub fn open_document(path: &Path) -> Result<Vec<DocumentPage>, String> {
-    let mut reader =
-        BufReader::new(File::open(path).map_err(|error| format!("Datei nicht lesbar: {error}"))?);
+    let mut reader = BufReader::new(File::open(path).map_err(|error| {
+        crate::i18n::format(
+            "Cannot read file: {error}",
+            &[("error", format!("{}", error))],
+        )
+    })?);
     let mut header = [0; 1024];
     let length = reader
         .read(&mut header)
@@ -95,7 +106,7 @@ pub fn open_document(path: &Path) -> Result<Vec<DocumentPage>, String> {
             .len()
             > MAX_PDF_BYTES
         {
-            return Err("PDF ist groesser als 256 MiB.".into());
+            return Err(crate::i18n::tr("PDF is larger than 256 MiB.").into());
         }
         let mut bytes = Vec::new();
         reader
@@ -103,11 +114,11 @@ pub fn open_document(path: &Path) -> Result<Vec<DocumentPage>, String> {
             .read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
         if bytes.len() as u64 > MAX_PDF_BYTES {
-            return Err("PDF ist groesser als 256 MiB.".into());
+            return Err(crate::i18n::tr("PDF is larger than 256 MiB.").into());
         }
         let pdf = Pdf::new(bytes).map_err(|error| match error {
-            hayro::hayro_syntax::LoadPdfError::Decryption(_) => "PDF ist passwortgeschuetzt oder kann nicht entschluesselt werden. Bitte eine ungeschuetzte Kopie importieren.".to_string(),
-            _ => "PDF ist beschaedigt oder unlesbar.".to_string(),
+            hayro::hayro_syntax::LoadPdfError::Decryption(_) => crate::i18n::tr("PDF is password-protected or cannot be decrypted. Please import an unprotected copy.").to_string(),
+            _ => crate::i18n::tr("PDF is damaged or unreadable.").to_string(),
         })?;
         let count = pdf.pages().len();
         (DocumentKind::Pdf(pdf), count)
@@ -125,8 +136,12 @@ pub fn open_document(path: &Path) -> Result<Vec<DocumentPage>, String> {
         (DocumentKind::Image, 1)
     };
     if page_count == 0 || page_count > MAX_DOCUMENT_PAGES {
-        return Err(format!(
-            "Dokument hat {page_count} Seiten. Erlaubt sind 1 bis {MAX_DOCUMENT_PAGES} Seiten pro Datei."
+        return Err(crate::i18n::format(
+            "Document has {page_count} pages. Between 1 and {MAX_DOCUMENT_PAGES} pages per file are allowed.",
+            &[
+                ("page_count", format!("{}", page_count)),
+                ("MAX_DOCUMENT_PAGES", format!("{}", MAX_DOCUMENT_PAGES)),
+            ],
         ));
     }
     let document = Arc::new(Document {
@@ -145,7 +160,7 @@ pub fn open_document(path: &Path) -> Result<Vec<DocumentPage>, String> {
 fn pdf_dimensions(width: f32, height: f32) -> Result<(u32, u32), String> {
     let scale = PDF_DPI / 72.0;
     if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-        return Err("PDF-Seite hat ungueltige Abmessungen.".into());
+        return Err(crate::i18n::tr("PDF page has invalid dimensions.").into());
     }
     let width = (width * scale).ceil() as u32;
     let height = (height * scale).ceil() as u32;
@@ -177,7 +192,7 @@ fn render_pdf_page(pdf: &Pdf, index: usize) -> Result<GrayImage, String> {
         .map(|pixel| image::Rgb([pixel[0], pixel[1], pixel[2]]).to_luma()[0])
         .collect();
     GrayImage::from_raw(width, height, pixels)
-        .ok_or_else(|| "PDF-Seite konnte nicht gerastert werden.".into())
+        .ok_or_else(|| crate::i18n::tr("Could not rasterize PDF page.").into())
 }
 
 #[cfg(test)]

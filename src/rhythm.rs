@@ -30,17 +30,26 @@ impl MeasureValidity {
 
     pub fn label(&self) -> String {
         let Some(expected) = self.expected_ticks else {
-            return "Taktart unbekannt: keine Taktprüfung".into();
+            return crate::i18n::tr("Unknown time signature: measure check unavailable").into();
         };
-        format!(
-            "Takt {}: Notenwerte {}, erwartet {}",
-            if self.actual_ticks == expected {
-                "gültig"
-            } else {
-                "ungültig"
-            },
-            duration_fraction(self.actual_ticks, self.divisions),
-            duration_fraction(expected, self.divisions),
+        crate::i18n::format(
+            "Measure {0}: note values {1}, expected {2}",
+            &[
+                (
+                    "0",
+                    (if self.actual_ticks == expected {
+                        crate::i18n::tr("valid")
+                    } else {
+                        crate::i18n::tr("invalid")
+                    })
+                    .to_string(),
+                ),
+                (
+                    "1",
+                    duration_fraction(self.actual_ticks, self.divisions).to_string(),
+                ),
+                ("2", duration_fraction(expected, self.divisions).to_string()),
+            ],
         )
     }
 }

@@ -1,4 +1,5 @@
 pub mod diagnostics;
+pub mod i18n;
 pub mod model;
 pub mod musicxml;
 pub mod recognition;

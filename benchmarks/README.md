@@ -1,48 +1,43 @@
-# Öffentliche Erkennungsbenchmarks
+# Public recognition benchmarks
 
-Der Benchmark verarbeitet eine eingefrorene Auswahl öffentlicher Notenbilder
-ohne Desktop-Oberfläche. Er vergleicht die erkannten Objekte mit unabhängigen
-Referenzannotationen und schreibt einen lokal lesbaren HTML-Bericht, JSON,
-Score-Modelle und markierte Fehlerbilder. Die Erkennung selbst wird dabei
-nicht verändert.
+The benchmark processes a frozen selection of public score images without the
+desktop UI. It compares recognized objects with independent reference annotations
+and writes a locally viewable HTML report, JSON, score models and marked error
+images. It does not modify recognition itself.
 
-## Vorbereitete lokale Bestände
+## Prepared local datasets
 
-Für den ersten Lauf wurden mit Seed 42 vorbereitet:
+The initial samples were prepared with seed 42:
 
-| Datensatz | Stichprobe | Entwicklung (`dev`) | Kontrolle (`test`) |
+| Dataset | Sample | Development (`dev`) | Held-out (`test`) |
 | --- | ---: | ---: | ---: |
-| PrIMuS | 500 aus 87.678 Ausschnitten | 391 | 109 |
-| DoReMi v1.0 | 40 aus 5.218 Seiten | 30 | 10 |
+| PrIMuS | 500 of 87,678 excerpts | 391 | 109 |
+| DoReMi v1.0 | 40 of 5,218 pages | 30 | 10 |
 
-Manifeste: `target/omr-benchmarks/primus.json` und
-`target/omr-benchmarks/doremi.json`. Die ersten Berichte liegen jeweils in
-`target/omr-benchmarks/primus-baseline/` und `doremi-baseline/`.
-Der Kontrollbestand wird beim normalen Aufruf nicht ausgewertet.
+Manifests are `target/omr-benchmarks/primus.json` and `doremi.json`. Initial
+reports are in `target/omr-benchmarks/primus-baseline/` and `doremi-baseline/`.
+The default invocation does not evaluate the held-out set.
 
-Der erste PrIMuS-Entwicklungslauf wertete **159/391** Beispiele aus; **232**
-waren außerhalb des Adapterumfangs, **0** hatten Verarbeitungsfehler.
-Die Ereignis-SER betrug **21,99 %**. Ausgewählte Eigenschafts-F1-Werte:
-Tonhöhe **96,28 %**, Notenwert **83,72 %**, Vorzeichnung (`key.fifths`)
-**47,69 %**. Das sind getrennte Maße auf dem unterstützten Teilbestand,
-keine allgemeine Erkennungsquote. Die häufigsten Ausschlussgründe waren
-C-Schlüssel und `tie`-Tokens. Der DoReMi-Lauf wertete **30/30** Seiten ohne
-Verarbeitungsfehler aus; die Klassen-F1 über den ausgewerteten Symbolumfang
-betrug **88,47 %** (micro). Die kompakte
-[Ergebnisdatei](baseline-summary.json) hält diese Messung auch außerhalb von
-`target/` fest. Sie ist eine Zusammenfassung, kein Eingabereport für `--baseline`.
+The first PrIMuS development run evaluated **159/391** samples; **232** were
+outside adapter scope and **0** had processing errors. Event SER was **21.99%**.
+Selected property F1 scores were pitch **96.28%**, note value **83.72%** and key
+signature (`key.fifths`) **47.69%**. These are separate measures on the supported
+subset, not an overall recognition rate. C clefs and `tie` tokens were the most
+common exclusions. The DoReMi run evaluated **30/30** pages without processing
+errors; micro class F1 across evaluated symbols was **88.47%**. The compact
+[baseline summary](baseline-summary.json) preserves this measurement outside
+`target/`; it is a summary, not a `--baseline` input report.
 
-Die anschließenden Änderungen an der Erkennung und ihr Vergleich mit dem
-zurückgehaltenen Kontrollbestand sind in
-[Erkennungsoptimierung](optimization.md) dokumentiert. Adapter, Stichprobe
-und Bewertungsregeln wurden dabei beibehalten.
+Subsequent recognition changes and their comparison on the held-out set are
+documented in [Recognition optimization](optimization.md). Adapters, samples
+and scoring rules were retained.
 
-## Herunterladen und Stichprobe einfrieren
+## Download and freeze a sample
 
-Benötigt werden Python **3.9+** ohne zusätzliche Pakete und die Rust-Toolchain
-des Projekts. Downloads und entpackte Daten bleiben standardmäßig unter
-`target/omr-data/`; dieser Ordner ist nicht Teil des Quellcodes. Beide Archive
-zusammen benötigen rund 366 MiB Download und entpackt mehrere GiB.
+Python **3.9+** without additional packages and the project's Rust toolchain are
+required. Downloads and extracted data default to `target/omr-data/`, outside
+the tracked source. Both archives total about 366 MiB downloaded and several
+GiB extracted.
 
 ```sh
 python3 scripts/prepare_benchmark.py fetch primus
@@ -57,35 +52,32 @@ python3 scripts/prepare_benchmark.py prepare doremi \
   --output target/omr-benchmarks/doremi.json --limit 40 --seed 42
 ```
 
-Bereits entpackte Daten lassen sich direkt mit `prepare` verwenden. Für
-Camera-PrIMuS ersetzen `fetch` und `prepare` den Datensatznamen durch
-`camera-primus` und verwenden einen eigenen Ausgabe-/Datenordner.
-Der Camera-PrIMuS-Download wurde hier noch nicht praktisch geprüft.
+Use `prepare` directly with already extracted data. For Camera-PrIMuS, replace
+the dataset name with `camera-primus` for both commands and use separate input
+and output directories. The Camera-PrIMuS download has not been tested here.
 
-Die Auswahl ist deterministisch, unabhängig von der Reihenfolge des
-Dateisystems. DoReMi-Seiten werden gleichmäßig über Quellprojekte verteilt,
-damit sehr große künstliche Übungsprojekte die kleine Stichprobe nicht
-dominieren. Der Entwicklungs-/Kontrollsplit wird mit SHA-256 aus Seed und
-Quellgruppe bestimmt (standardmäßig 20 % der Gruppen für `test`). Bei DoReMi
-gehören alle Seiten desselben Projekts zusammen, bei PrIMuS dieselben
-Incipit-IDs einschließlich erkannter Schriftvarianten. Das garantiert keine
-Trennung verschiedener Incipits desselben musikalischen Werks.
+Selection is deterministic and independent of filesystem order. DoReMi pages
+are distributed evenly across source projects so large synthetic exercise
+projects do not dominate a small sample. The dev/test split is determined using
+SHA-256 of the seed and source group, with 20% of groups assigned to `test` by
+default. DoReMi groups all pages of a project; PrIMuS groups incipit IDs including
+recognized font variants. This does not guarantee separation of different
+incipits from the same musical work.
 
-Das Manifest speichert alle ausgewählten Dateien und ihre FNV-1a/64-Prüfsummen.
-Jeder Lauf prüft diese erneut; geänderte oder fehlende Dateien ergeben einen
-Verarbeitungsfehler. FNV dient der Wiederholbarkeit, nicht als kryptografische
-Signatur. Einen neuen Seed nur für eine bewusst neue Stichprobe verwenden;
-für Erkennungsänderungen dasselbe Manifest behalten.
+The manifest records selected files and FNV-1a/64 checksums, rechecked on every
+run. Missing or changed files produce processing errors. FNV provides
+repeatability rather than a cryptographic signature. Use a new seed only for a
+deliberately new sample; retain the manifest when changing recognition.
 
-DoReMi verwendet unterschiedliche Dateinamen für Bild und Seitenannotation.
-`prepare` ordnet sie über den Seitensuffix zu. Der offizielle Seitenexport
-entfernt musikalische `DataItem`-Angaben; das Skript ergänzt vorhandene Angaben
-aus `OMR_XML` anhand der Objekt-IDs in separaten Referenzkopien neben dem
-Manifest. Ohne Original-XML bleibt die räumliche Klassenauswertung möglich,
-die zusätzlichen Eigenschaften bleiben unbewertet. Originaldateien bleiben
-unverändert. Manifest und zugehörigen `*-references`-Ordner zusammen behalten.
+DoReMi images and page annotations have different filenames; `prepare` matches
+them by page suffix. The official page export removes musical `DataItem`
+metadata. The script supplements available metadata from `OMR_XML` by object ID
+in separate reference copies beside the manifest. Without original XML, spatial
+class evaluation still works but additional properties remain unevaluated.
+Original files are unchanged. Keep the manifest and its `*-references` directory
+together.
 
-## Ausführen
+## Run
 
 ```sh
 cargo build --release --locked --no-default-features --bin omr-benchmark
@@ -99,87 +91,76 @@ target/release/omr-benchmark \
   --output target/omr-benchmarks/doremi-run-01 --overlays 10
 ```
 
-Unter Windows heißt das Programm `target/release/omr-benchmark.exe`.
-`cargo run --locked` startet weiterhin die Desktop-App. Mit
-`--no-default-features` benötigt der Benchmark keine GUI-Abhängigkeiten.
+On Windows the executable is `target/release/omr-benchmark.exe`. `cargo run --locked`
+still starts the desktop app. With `--no-default-features`, the benchmark needs
+no GUI dependencies.
 
-`--split dev` ist voreingestellt. `--limit 10` verkürzt einen Probelauf,
-`--split test` wertet ausdrücklich den zurückgehaltenen Kontrollbestand aus.
-`--split all` ist für Bestandsprüfungen verfügbar. Entwicklungs- und
-Kontrollergebnisse getrennt halten; Kontrollbilder nicht zum Anpassen der
-Heuristiken benutzen.
+`--split dev` is the default. Use `--limit 10` for a short trial, `--split test`
+to explicitly evaluate the held-out set, and `--split all` to inspect the full
+selection. Keep development and held-out results separate and do not use held-out
+images to tune heuristics.
 
-Jeder Lauf benötigt einen neuen oder leeren Ausgabeordner. Unter anderem
-entstehen:
+Each run needs a new or empty output directory. Outputs include:
 
-- `index.html`: Klassen-/Eigenschaftsmetriken und aufklappbare Einzelvergleiche.
-- `report.json`: alle Zuordnungen, Kennzahlen, Dateiprüfsummen, nicht unterstützte
-  Beispiele, Fehlergründe und ausgeschlossene DoReMi-Klassen.
-- `sample-*.score.json`: unverändertes Ergebnis der Erkennung, vor Korrekturen.
-- `sample-*.png`: markierte Abweichungen, standardmäßig höchstens 20 Bilder.
+- `index.html`: class/property metrics and expandable per-sample comparisons.
+- `report.json`: assignments, metrics, checksums, unsupported samples, error
+  reasons and excluded DoReMi classes.
+- `sample-*.score.json`: unmodified recognition results before correction.
+- `sample-*.png`: marked discrepancies, at most 20 images by default.
 
-Grün kennzeichnet korrekte Objekte, Rot fehlende, Magenta zusätzliche und
-Orange falsch klassifizierte Objekte oder falsche Eigenschaften. PrIMuS hat
-keine Referenz-Pixelkoordinaten; fehlende Ereignisse erscheinen dort in der
-Vergleichsliste, ohne erfundene Position im Fehlerbild. DoReMi bietet dagegen
-räumlich lokalisierte Referenzobjekte.
+Green marks correct objects, red missing objects, magenta extras and orange
+misclassified objects or incorrect properties. PrIMuS has no reference pixel
+coordinates; missing events appear in the comparison list without invented
+positions in overlays. DoReMi supplies spatially located reference objects.
 
-Die Bilddekodierung einschließlich Transparenz, Größenlimits und Fax3-TIFF
-ist dieselbe wie in der App. Der Benchmark richtet Bilder standardmäßig nicht
-neu aus. `--straighten` aktiviert für PrIMuS denselben Ausrichtungsschritt wie
-in der Desktop-App. Für DoReMi ist dieser Schalter gesperrt, weil eine Drehung
-ohne Transformation der Referenzboxen den Vergleich verfälschen würde.
+Image decoding, including transparency, size limits and Fax3 TIFF, is shared
+with the app. The benchmark does not deskew by default. `--straighten` enables
+the desktop alignment step for PrIMuS. DoReMi rejects that flag because rotating
+the image without transforming reference boxes would invalidate the comparison.
 
-## Was die Kennzahlen aussagen
+## Interpreting metrics
 
-**PrIMuS:** Noten, Pausen und Taktstriche werden als Sequenz verglichen.
-Levenshtein-Zuordnung zählt Einfügungen, Auslassungen und Ersetzungen, ohne
-dass eine einzelne zusätzliche Note alle folgenden Ereignisse verschiebt.
-Die Sequenzfehlerrate **SER** ist die Summe dieser Fehler geteilt durch die
-Anzahl der Referenzereignisse. Ein Ereignis ist nur vollständig richtig, wenn
-auch seine annotierten Eigenschaften stimmen. SER kann bei vielen zusätzlichen
-Ereignissen über 100 % liegen. Schlüssel, Vorzeichnung und Taktart werden
-separat zugeordnet und gehen nicht in die Ereignis-SER ein. C und 4/4 sowie
-Alla breve und 2/2 werden musikalisch gleichgesetzt.
+**PrIMuS:** Notes, rests and barlines are compared as a sequence. Levenshtein
+alignment counts insertions, deletions and substitutions without letting one
+extra note shift every later event. Sequence error rate **SER** is their sum
+divided by the reference event count. An event is fully correct only when its
+annotated properties also match. Many extra events can make SER exceed 100%.
+Clefs, keys and meters are assigned separately and excluded from event SER.
+Common time/4-4 and alla breve/2-2 are treated as musically equivalent.
 
-Unterstützt werden G2-/F4-Schlüssel, gewöhnliche Noten/Pausen bis 1/64,
-Noten und Pausen mit bis zu zwei Punkten und einfache Tonhöhenalterationen. Beispiele
-mit C-/anderen Schlüsseln, Vorschlägen, `tie`-Tokens, `multirest`-Tokens,
-nicht abbildbaren Werten oder inneren Systemangaben werden
-als **nicht unterstützt** ausgewiesen. Sie zählen nicht als erfolgreiche
-Erkennung und nicht zum SER-Nenner. Diese Einschränkung betrifft den Adapter,
-auch wenn libreOMR manche dieser Zeichen bereits teilweise erkennen kann.
+The adapter supports G2/F4 clefs, ordinary notes/rests down to 1/64, up to two
+dots, and simple pitch alterations. Samples with C/other clefs, grace notes,
+`tie`/`multirest` tokens, unrepresentable values or internal staff attributes are
+reported as **unsupported**. They count neither as successful recognition nor
+toward the SER denominator. This is an adapter restriction even where libreOMR
+can partially recognize those symbols.
 
-**DoReMi:** Gewöhnliche schwarze/halbe/ganze Notenköpfe, die sieben
-Pausenwerte, Violin-/Bassschlüssel und zuordenbare Dynamikklassen werden
-räumlich verglichen. Ein vorhergesagter Mittelpunkt muss innerhalb der
-Referenzbox liegen, erweitert um 25 % der kleineren Boxkante (mindestens
-2 Pixel). Die Zuordnung maximiert die Anzahl eindeutiger Paare innerhalb
-derselben Symbolfamilie; Distanz ordnet die Kandidaten. Eine falsche Unterklasse
-bleibt eine Fehlklassifikation, ein doppelter Treffer ein zusätzliches Objekt.
-Das ist ein Diagnosemaß für die aktuelle Erkennung, kein COCO-mAP-Benchmark.
+**DoReMi:** Ordinary filled/half/whole heads, seven rest values, treble/bass
+clefs and mappable dynamics classes are compared spatially. A predicted center
+must lie within the reference box expanded by 25% of its shorter side, at least
+2 pixels. Matching maximizes unique pairs within the same symbol family;
+distance orders candidates. Wrong subclasses remain misclassifications and
+duplicate matches count as extras. This is a diagnostic for current recognition,
+not a COCO-mAP benchmark.
 
-Mit ergänzten Originalmetadaten werden zusätzlich diatonische Tonhöhe,
-Alteration und klingende Dauer geprüft. Die Dauer wird in 192 Einheiten pro
-Viertelnote normalisiert, um Rundungen in den DoReMi-Dezimalzahlen abzufangen.
-Stimmenzuordnung und Einsatzzeit werden noch nicht geprüft. Unbekannte
-DoReMi-Klassen sind im Bericht gezählt; für Vorzeichen als eigene Bildobjekte,
-Artikulationen, Bögen, Gabeln und numerische Taktzeichen existiert hier noch
-keine räumliche Auswertung.
+Supplemented original metadata enables diatonic pitch, alteration and sounding
+duration checks. Duration is normalized to 192 units per quarter to absorb
+rounding in DoReMi decimals. Voice assignment and onset timing are not evaluated.
+Unknown classes are counted in the report. Separate accidental objects,
+articulations, bows, wedges and numeric meters do not yet have spatial evaluation.
 
-**Beide:** Precision/Recall/F1 werden pro Klasse und musikalischer Eigenschaft
-ausgewiesen. Klassentreffer messen Erkennung und Klassifikation unabhängig
-von den separat bewerteten Eigenschaften. Fehlende Objekte erzeugen auch
-fehlende Eigenschaften. Nicht annotierte Eigenschaften werden nicht bewertet.
-Werte ohne Nenner sind `null` beziehungsweise „—“. Fehler und nicht
-unterstützte Beispiele werden stets neben der Zahl ausgewerteter Beispiele
-angegeben; ein Lauf ohne ausgewertetes Beispiel gilt als fehlgeschlagen.
+**Both:** Precision, recall and F1 are reported per class and musical property.
+Class matches measure detection/classification independently of separately scored
+properties. Missing objects also cause missing properties. Unannotated properties
+are excluded. Values without a denominator are `null` or “—”. Errors and
+unsupported samples are always shown beside the evaluated count. Runs with no
+evaluated sample fail.
 
-Die Bilder sind überwiegend gesetzte Noten. Eine gute Quote hier belegt noch
-keine entsprechende Robustheit auf Fotos oder alten Scans. Die kleine erste
-DoReMi-Auswahl dient der Fehlersuche, nicht einer allgemeinen Qualitätsaussage.
+Most images are typeset notation. Good results here do not establish robustness
+on photos or old scans. The small initial DoReMi selection is for debugging,
+not a general quality claim.
 
-## Änderungen gegen einen Referenzlauf prüfen
+## Compare with a reference run
 
 ```sh
 target/release/omr-benchmark \
@@ -188,18 +169,17 @@ target/release/omr-benchmark \
   --baseline target/omr-benchmarks/primus-run-01/report.json
 ```
 
-Der Vergleich akzeptiert nur dieselben Manifeste, ausgewählten Dateien,
-Splits und Ausrichtungseinstellungen. Weniger auswertbare Bilder, schlechtere
-Klassen-/Eigenschafts-F1-Werte und höhere SER ergeben eine Regression.
-`--max-regression 0.5` erlaubt eine Verschlechterung um 0,5 Prozentpunkte.
-Kleine Klassen bleiben bewusst sichtbar und können entsprechend empfindlich
-reagieren. Die Vergleichsliste wird zusätzlich als `regressions.json` gespeichert.
+Comparison requires identical manifests, selected files, splits and alignment
+settings. Fewer evaluable images, lower class/property F1 and higher SER are
+regressions. `--max-regression 0.5` permits a decline of 0.5 percentage points.
+Small classes deliberately remain visible and may be sensitive. Comparisons
+are also saved as `regressions.json`.
 
-Exitcodes: **0** abgeschlossen, **1** Regression, **2** Eingabe-/Datei-/
-Verarbeitungsfehler oder kein auswertbares Beispiel. Nicht unterstützte
-Beispiele allein erzeugen keinen Fehlercode, solange andere ausgewertet wurden.
+Exit codes: **0** completed, **1** regression, **2** input/file/processing error
+or no evaluable sample. Unsupported samples alone do not cause failure if other
+samples were evaluated.
 
-## Automatische Tests
+## Automated tests
 
 ```sh
 cargo test --locked
@@ -207,11 +187,10 @@ cargo test --locked --no-default-features --lib benchmark
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-Die CI prüft die Offline-Logik ohne öffentliche Downloads: Sequenzzuordnung,
-räumliche Mehrdeutigkeiten und doppelte Treffer, Parser, Referenzerweiterung,
-reproduzierbare Auswahl, Split-Trennung, Dateiintegrität und Regressionen.
-Die großen Korpora werden separat lokal ausgeführt.
+CI checks offline logic without public downloads: sequence alignment, spatial
+ambiguity and duplicates, parsers, reference supplementation, reproducible
+selection, split separation, integrity and regressions. Large corpora run locally.
 
-Quellen: [PrIMuS und Camera-PrIMuS](https://grfia.dlsi.ua.es/primus/),
-[DoReMi-Dokumentation](https://github.com/steinbergmedia/DoReMi) und
+Sources: [PrIMuS and Camera-PrIMuS](https://grfia.dlsi.ua.es/primus/),
+[DoReMi documentation](https://github.com/steinbergmedia/DoReMi) and
 [DoReMi v1.0](https://github.com/steinbergmedia/DoReMi/releases/tag/v1.0).
