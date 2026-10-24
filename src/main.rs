@@ -1,3 +1,6 @@
+// Build the desktop app as a GUI executable so Windows opens no console window.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod icon;
 mod preview;

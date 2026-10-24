@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Force a renderer failure and verify the real Windows error dialog and log."""
+"""Verify a console-free GUI executable and its native error dialog and log."""
 
 import ctypes
 from ctypes import wintypes
@@ -7,9 +7,31 @@ import os
 import json
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import time
+
+
+def check_gui_subsystem(binary):
+    # Both PE32 and PE32+ place Subsystem at offset 68 in the optional header.
+    # Check the binary itself: hiding a console in the test launcher would mask
+    # a regression when users start the application from Explorer.
+    with binary.open("rb") as executable:
+        dos_header = executable.read(64)
+        if len(dos_header) != 64 or dos_header[:2] != b"MZ":
+            raise ValueError("Not a Windows executable")
+        executable.seek(struct.unpack_from("<I", dos_header, 60)[0])
+        pe_header = executable.read(24)
+        if len(pe_header) != 24 or pe_header[:4] != b"PE\0\0":
+            raise ValueError("Missing PE header")
+        optional_header = executable.read(struct.unpack_from("<H", pe_header, 20)[0])
+        if len(optional_header) < 70 or struct.unpack_from("<H", optional_header)[0] not in (0x10B, 0x20B):
+            raise ValueError("Missing PE32/PE32+ optional header")
+        subsystem = struct.unpack_from("<H", optional_header, 68)[0]
+        if subsystem != 2:  # IMAGE_SUBSYSTEM_WINDOWS_GUI
+            raise AssertionError(f"Expected Windows GUI subsystem (2), got {subsystem}; a console may open")
+    print("Windows GUI subsystem verified: no console window on launch")
 
 
 def check(binary, language="english"):
@@ -118,5 +140,6 @@ if __name__ == "__main__":
     if sys.platform != "win32":
         raise SystemExit("This smoke test requires Windows")
     binary = Path(sys.argv[1]).resolve(strict=True)
+    check_gui_subsystem(binary)
     for language in ("english", "german"):
         check(binary, language)

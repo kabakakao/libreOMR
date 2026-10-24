@@ -69,9 +69,9 @@ On macOS, copy `libreOMR.app` to Applications. The app is not yet signed or
 notarized, so macOS may require approval in **System Settings > Privacy & Security**.
 Intel Macs are not supported.
 
-The Windows executable embeds application icons at multiple resolutions for
-Explorer and shortcuts. The macOS bundle includes Finder and Dock icons with
-Retina resolutions.
+The Windows executable starts without a console window and embeds icons at
+multiple resolutions for Explorer and shortcuts. The macOS bundle includes
+Finder and Dock icons with Retina resolutions.
 
 Linux requires a graphical X11 or Wayland session and the system libraries
 for XKB, Wayland and EGL. File dialogs use `xdg-desktop-portal` with a backend
