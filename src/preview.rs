@@ -49,13 +49,8 @@ pub(crate) fn paint_span(
         painter.add(egui::Shape::line(points, Stroke::new(thickness, color)));
     } else {
         for side in [-1.0, 1.0] {
-            let mut start = span.start;
-            let mut end = span.end;
-            if span.kind == SpanKind::Crescendo {
-                end[1] += side * span.height;
-            } else {
-                start[1] += side * span.height;
-            }
+            let start = span.wedge_point(0.0, side);
+            let end = span.wedge_point(1.0, side);
             painter.line_segment([map(start), map(end)], Stroke::new(thickness, color));
         }
     }
@@ -733,7 +728,10 @@ impl Preview {
             Some(Selection::RepeatMark(i)) => {
                 score.repeat_marks.get(i).map(|n| (n.staff, [n.x, n.y]))
             }
-            Some(Selection::Span(i)) => score.spans.get(i).map(|n| (n.staff, n.start)),
+            Some(Selection::Span(i)) => score
+                .spans
+                .get(i)
+                .map(|n| (n.staff, score.resolved_span(n).start)),
             Some(Selection::Barline(i)) => score
                 .barlines
                 .get(i)
@@ -1039,9 +1037,15 @@ impl Preview {
                 position
             }
             Selection::Span(index) => {
-                let mut span = score.spans.get(index)?.clone();
+                let mut span = score
+                    .span_segments(score.spans.get(index)?)
+                    .into_iter()
+                    .next()?;
                 let position = (span.staff, span.start[0]);
                 span.staff = 0;
+                span.start_anchor = None;
+                span.end_anchor = None;
+                span.continuation = None;
                 isolated.spans.push(span);
                 position
             }
@@ -1091,6 +1095,7 @@ impl Preview {
             ui.label(i18n::tr("No staff"));
             return None;
         };
+        let drawable_spans = score.drawable_spans();
         let time_signature =
             score.time_signature_before_with_inherited(staff_index, staff.left, inherited);
         let measures = if fit_object {
@@ -1297,7 +1302,10 @@ impl Preview {
             );
             lower = lower.max(level + 1.4);
         }
-        for span in score.spans.iter().filter(|span| span.staff == staff_index) {
+        for (_, span) in drawable_spans
+            .iter()
+            .filter(|(_, span)| span.staff == staff_index)
+        {
             if matches!(span.kind, SpanKind::Slur | SpanKind::Tie) {
                 for sample in 0..=48 {
                     let point = span.curve_point(sample as f32 / 48.0);
@@ -1306,19 +1314,14 @@ impl Preview {
                     lower = lower.max(level + 0.1);
                 }
             } else {
-                let (opening, closed) = if span.kind == SpanKind::Crescendo {
-                    (span.end[1], span.start[1])
-                } else {
-                    (span.start[1], span.end[1])
-                };
-                upper = upper.min(
-                    (closed.min(opening - span.height.abs()) - staff.lines[0]) / staff.spacing()
-                        - 0.1,
-                );
-                lower = lower.max(
-                    (closed.max(opening + span.height.abs()) - staff.lines[0]) / staff.spacing()
-                        + 0.1,
-                );
+                for t in [0.0, 1.0] {
+                    upper = upper.min(
+                        (span.wedge_point(t, -1.0)[1] - staff.lines[0]) / staff.spacing() - 0.1,
+                    );
+                    lower = lower.max(
+                        (span.wedge_point(t, 1.0)[1] - staff.lines[0]) / staff.spacing() + 0.1,
+                    );
+                }
             }
         }
         let verse_count = score
@@ -1373,11 +1376,10 @@ impl Preview {
             .map(|&(x, item)| x + item.width(score) * 0.5)
             .fold(header_width, f32::max);
         let measure_end = item_end + GAP;
-        let rightmost = score
-            .spans
+        let rightmost = drawable_spans
             .iter()
-            .filter(|span| span.staff == staff_index)
-            .map(|span| map_x(span.end[0]))
+            .filter(|(_, span)| span.staff == staff_index)
+            .map(|(_, span)| map_x(span.end[0]))
             .chain(
                 score
                     .dynamics
@@ -1412,11 +1414,10 @@ impl Preview {
                     }),
             )
             .fold(item_end, f32::max);
-        let leftmost = score
-            .spans
+        let leftmost = drawable_spans
             .iter()
-            .filter(|span| span.staff == staff_index)
-            .map(|span| map_x(span.start[0]) - 12.0)
+            .filter(|(_, span)| span.staff == staff_index)
+            .map(|(_, span)| map_x(span.start[0]) - 12.0)
             .chain(
                 score
                     .dynamics
@@ -1546,6 +1547,7 @@ impl Preview {
             ..
         } = layout.clone();
         let staff = &score.staves[staff_index];
+        let drawable_spans = score.drawable_spans();
         let relative = |pitch| (staff.y_at_pitch(pitch) - staff.lines[0]) / staff.spacing();
         let map_x = |source| layout.map_x(source, staff);
         self.scale = scale;
@@ -1756,11 +1758,10 @@ impl Preview {
                 clicked = Some(Selection::Dynamic(index));
             }
         }
-        for (index, span) in score
-            .spans
+        for (index, span) in drawable_spans
             .iter()
-            .enumerate()
             .filter(|(_, span)| span.staff == staff_index)
+            .map(|(i, s)| (*i, s))
         {
             let map = |source: [f32; 2]| {
                 point(
@@ -1798,6 +1799,10 @@ impl Preview {
                         ]
                     };
                     map(source).distance(pointer) <= 8.0
+                        || (!span.is_bow()
+                            && [-1.0, 1.0].iter().any(|&side| {
+                                map(span.wedge_point(fraction, side)).distance(pointer) <= 8.0
+                            }))
                 });
                 if nearby
                     && ui
@@ -2276,13 +2281,25 @@ impl Preview {
             }
         }
         if !fit_object {
-            for (index, span) in score
-                .spans
+            for (index, span) in drawable_spans
                 .iter()
-                .enumerate()
                 .filter(|(_, span)| span.staff == staff_index)
+                .map(|(i, s)| (*i, s))
             {
                 for (right, source) in [(false, span.start), (true, span.end)] {
+                    let original = &score.spans[index];
+                    let endpoint_staff = if right {
+                        original
+                            .end_anchor
+                            .as_ref()
+                            .map(|a| score.notes[a.note].staff)
+                            .unwrap_or(original.staff)
+                    } else {
+                        original.staff
+                    };
+                    if endpoint_staff != staff_index {
+                        continue;
+                    }
                     let center = point(
                         map_x(source[0]),
                         (source[1] - staff.lines[0]) / staff.spacing(),
@@ -2295,6 +2312,20 @@ impl Preview {
                         Color32::GRAY
                     };
                     let radius = if active { 6.0 } else { 4.0 };
+                    let anchor = if right {
+                        &original.end_anchor
+                    } else {
+                        &original.start_anchor
+                    };
+                    if active && let Some(anchor) = anchor {
+                        let note = &score.notes[anchor.note];
+                        let attached =
+                            point(map_x(note.x), (note.y - staff.lines[0]) / staff.spacing());
+                        ui.painter()
+                            .line_segment([center, attached], Stroke::new(1.0_f32, color));
+                        ui.painter()
+                            .circle_stroke(attached, 3.5, Stroke::new(1.0_f32, color));
+                    }
                     if layout.axis.is_none()
                         || active
                         || ui.rect_contains_pointer(Rect::from_center_size(
@@ -2759,6 +2790,10 @@ mod tests {
             confirmed: false,
         });
         score.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 1,
             kind: SpanKind::Slur,
             start: [120.0, 140.0],
@@ -3876,6 +3911,10 @@ mod tests {
         let staff = &score.staves[0];
         for (index, kind) in SpanKind::ALL.into_iter().enumerate() {
             score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind,
                 start: [
@@ -3963,6 +4002,10 @@ mod tests {
         for kind in SpanKind::ALL {
             let mut changed = score.clone();
             changed.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind,
                 start: [160.0, 48.0],
@@ -4098,6 +4141,10 @@ mod tests {
         variants.push(changed);
         let mut changed = score.clone();
         changed.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Slur,
             start: [400.0, 48.0],

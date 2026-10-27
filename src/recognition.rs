@@ -338,8 +338,9 @@ pub fn recognize_with_progress(
     score.recompute_accidentals();
     crate::symbols::recognize_articulations(&binary, &mut score);
     report(11, "Detect slurs, ties and dynamic wedges", None);
-    score.spans = crate::spans::recognize(&binary, &score);
     crate::score_structure::assign_parts(&binary, &mut score);
+    score.spans = crate::spans::recognize(&binary, &score);
+    score.recompute_accidentals();
     report(12, "Recognition complete", None);
     score
 }

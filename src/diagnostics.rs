@@ -157,6 +157,10 @@ mod tests {
     fn bows_wedges_and_endings_have_specific_editable_targets() {
         let mut score = score();
         score.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Slur,
             start: [220.0, 60.0],
@@ -179,6 +183,10 @@ mod tests {
         empty.lines = empty.lines.map(|y| y + 140.0);
         score.staves.push(empty);
         score.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 1,
             kind: SpanKind::Crescendo,
             start: [80.0, 240.0],
@@ -242,6 +250,10 @@ mod tests {
             confirmed: true,
         });
         first.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Crescendo,
             start: [80.0, 100.0],
@@ -254,6 +266,10 @@ mod tests {
         second.notes[0].duration = Duration::Half;
         second.notes[0].dots = 1;
         second.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Tie,
             start: [220.0, 60.0],
@@ -288,6 +304,10 @@ mod tests {
         score.barlines[0].kind = BarlineKind::RepeatStart;
         for _ in 0..17 {
             score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Decrescendo,
                 start: [80.0, 100.0],

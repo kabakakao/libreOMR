@@ -182,6 +182,14 @@ Move or delete incorrect objects. Use the score image's context menu to insert
 missing notes, rests and other symbols. Clef, key signature and time signature
 are available under **Staff information**. You can undo and redo changes.
 
+For slurs, ties, crescendos and decrescendos, drag the endpoint handles onto notes or select the start and
+end notes under **Object properties**. Attached endpoints follow note corrections.
+**Flip bow** switches the bow above/below the notes. Select two notes before
+adding a bow to connect them directly, including across system breaks on the
+same page. This also works for dynamic wedges: their opening continues across
+system breaks. Both scan and preview show separate segments; MusicXML keeps
+one matching start/end pair across systems. Free wedge endpoints remain available.
+
 Confirm a reviewed object with the circle in the object list. **F6** jumps to
 the next unreviewed object. Confirmation records your review; the rest of the
 score still needs checking.

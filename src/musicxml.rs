@@ -89,6 +89,7 @@ enum Item {
     RepeatMark(usize),
 }
 
+#[derive(Clone)]
 struct Mark {
     kind: SpanKind,
     phase: &'static str,
@@ -96,14 +97,16 @@ struct Mark {
     placement: &'static str,
 }
 
+#[derive(Clone)]
 struct WedgeEndpoint {
     x: f32,
+    note: Option<usize>,
     mark: Mark,
 }
 
 fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
     let mut marks: Vec<Vec<Mark>> = (0..score.notes.len()).map(|_| vec![]).collect();
-    let mut occupied: Vec<(usize, f32, f32, u8)> = vec![];
+    let mut occupied: Vec<(usize, usize, u8)> = vec![];
     for (span_index, span) in score
         .spans
         .iter()
@@ -126,9 +129,20 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
                 })
                 .map(|(index, _)| index)
         };
-        let endpoints = anchor(span.start).zip(anchor(span.end));
+        let resolved = score.resolved_span(span);
+        let endpoints = span
+            .start_anchor
+            .as_ref()
+            .map(|a| a.note)
+            .or_else(|| anchor(resolved.start))
+            .zip(
+                span.end_anchor
+                    .as_ref()
+                    .map(|a| a.note)
+                    .or_else(|| anchor(resolved.end)),
+            );
         let Some((start, end)) =
-            endpoints.filter(|(start, end)| score.notes[*start].x < score.notes[*end].x)
+            endpoints.filter(|(start, end)| score.bow_note_order(*start, *end))
         else {
             warnings.report(Issue::warning(
                 span.staff,
@@ -140,22 +154,9 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
             continue;
         };
         let first = &score.notes[start];
-        let last = &score.notes[end];
         if span.kind == SpanKind::Tie
-            && (first.voice != last.voice
-                || (first.pitch, first.accidental) != (last.pitch, last.accidental)
-                || score.notes.iter().any(|note| {
-                    note.staff == span.staff
-                        && note.voice == first.voice
-                        && note.x > first.x + gap * 0.35
-                        && note.x < last.x - gap * 0.35
-                })
-                || score.rests.iter().any(|rest| {
-                    rest.staff == span.staff
-                        && rest.voice == first.voice
-                        && rest.x > first.x
-                        && rest.x < last.x
-                }))
+            && (!score.tie_compatible(start, end)
+                || first.accidental != score.notes[end].accidental)
         {
             warnings.report(Issue::warning(
                 span.staff, Some(Object::Span(span_index)), Some(span.start[0]),
@@ -165,8 +166,13 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
             continue;
         }
         let Some(number) = (1..=16).find(|number| {
-            !occupied.iter().any(|&(staff, left, right, used)| {
-                staff == span.staff && used == *number && left <= last.x && right >= first.x
+            !occupied.iter().any(|&(left, right, used)| {
+                used == *number
+                    && score
+                        .bow_staves(first.staff)
+                        .contains(&score.notes[left].staff)
+                    && !score.bow_note_order(right, start)
+                    && !score.bow_note_order(end, left)
             })
         }) else {
             warnings.report(Issue::warning(
@@ -176,7 +182,7 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
             ));
             continue;
         };
-        occupied.push((span.staff, first.x, last.x, number));
+        occupied.push((start, end, number));
         for (index, phase) in [(start, "start"), (end, "stop")] {
             marks[index].push(Mark {
                 kind: span.kind,
@@ -189,33 +195,27 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
     marks
 }
 
-// Wedges are directions on the rhythmic timeline, unlike note-bound ties/slurs.
-// Route endpoints to existing measures so directions never create empty measures.
-fn wedge_endpoints(
-    score: &Score,
-    staff_index: usize,
-    items: &[(f32, Item)],
-    bars: &[&crate::model::Barline],
-    warnings: &mut Warnings,
-) -> Vec<Vec<WedgeEndpoint>> {
-    let mut endpoints: Vec<Vec<WedgeEndpoint>> = (0..=bars.len()).map(|_| vec![]).collect();
-    let mut rhythmic_segments = vec![];
-    for (x, item) in items {
-        if matches!(item, Item::Note(_) | Item::Rest(_)) {
-            let segment = bars.partition_point(|bar| bar.x <= *x);
-            if rhythmic_segments.last() != Some(&segment) {
-                rhythmic_segments.push(segment);
-            }
-        }
-    }
-    let mut occupied: Vec<(f32, f32, u8)> = vec![];
-    for (span_index, span) in score.spans.iter().enumerate().filter(|(_, span)| {
-        span.staff == staff_index
-            && matches!(span.kind, SpanKind::Crescendo | SpanKind::Decrescendo)
-    }) {
-        if rhythmic_segments.is_empty() {
+// Allocate one number per musical wedge, including both ends across systems.
+fn wedge_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<WedgeEndpoint>> {
+    let mut marks: Vec<Vec<WedgeEndpoint>> = (0..score.staves.len()).map(|_| vec![]).collect();
+    let mut occupied: Vec<(usize, f32, usize, f32, u8)> = vec![];
+    for (span_index, original) in score.spans.iter().enumerate().filter(|(_, s)| !s.is_bow()) {
+        let span = score.resolved_span(original);
+        let end_staff = span
+            .end_anchor
+            .as_ref()
+            .map_or(span.staff, |a| score.notes[a.note].staff);
+        let musical_x = |anchor: &Option<crate::model::NoteAnchor>, point: [f32; 2]| {
+            anchor.as_ref().map_or(point[0], |a| score.notes[a.note].x)
+        };
+        let start_x = musical_x(&span.start_anchor, span.start);
+        let end_x = musical_x(&span.end_anchor, span.end);
+        if [span.staff, end_staff].iter().any(|&staff| {
+            !score.notes.iter().any(|n| n.staff == staff)
+                && !score.rests.iter().any(|r| r.staff == staff)
+        }) {
             warnings.report(Issue::warning(
-                staff_index,
+                span.staff,
                 Some(Object::Span(span_index)),
                 Some(span.start[0]),
                 crate::i18n::format(
@@ -228,40 +228,70 @@ fn wedge_endpoints(
             ));
             continue;
         }
+        let rows = score.bow_staves(span.staff);
+        let position = |staff, x| rows.iter().position(|&s| s == staff).map(|row| (row, x));
+        let start = position(span.staff, start_x).unwrap();
+        let end = position(end_staff, end_x).unwrap();
         let Some(number) = (1..=16).find(|number| {
-            !occupied.iter().any(|&(left, right, used)| {
-                used == *number && left <= span.end[0] && right >= span.start[0]
+            !occupied.iter().any(|&(a, x, b, y, used)| {
+                used == *number
+                    && position(a, x)
+                        .zip(position(b, y))
+                        .is_some_and(|(left, right)| left <= end && right >= start)
             })
         }) else {
-            warnings.report(Issue::warning(
-                staff_index, Some(Object::Span(span_index)), Some(span.start[0]),
+            warnings.report(Issue::warning(span.staff, Some(Object::Span(span_index)), Some(span.start[0]),
                 crate::i18n::tr("Too many overlapping wedges; symbol omitted."),
-                crate::i18n::tr("Delete duplicate dynamic wedges or correct their length; at most 16 may overlap."),
-            ));
+                crate::i18n::tr("Delete duplicate dynamic wedges or correct their length; at most 16 may overlap.")));
             continue;
         };
-        occupied.push((span.start[0], span.end[0], number));
-        for (point, phase) in [(span.start, "start"), (span.end, "stop")] {
-            let target = bars.partition_point(|bar| bar.x <= point[0]);
-            let segment = *rhythmic_segments
-                .iter()
-                .min_by_key(|&&segment| segment.abs_diff(target))
-                .unwrap();
-            endpoints[segment].push(WedgeEndpoint {
-                x: point[0],
+        occupied.push((span.staff, start_x, end_staff, end_x, number));
+        for (staff, point, anchor, phase) in [
+            (span.staff, span.start, &span.start_anchor, "start"),
+            (end_staff, span.end, &span.end_anchor, "stop"),
+        ] {
+            marks[staff].push(WedgeEndpoint {
+                x: musical_x(anchor, point),
+                note: anchor.as_ref().map(|a| a.note),
                 mark: Mark {
                     kind: span.kind,
                     phase,
                     number: number.to_string(),
-                    placement: if (span.start[1] + span.end[1]) / 2.0
-                        < score.staves[staff_index].lines[2]
-                    {
+                    placement: if point[1] < score.staves[staff].lines[2] {
                         "above"
                     } else {
                         "below"
                     },
                 },
             });
+        }
+    }
+    marks
+}
+
+// Route free endpoints to existing measures; anchors use their note's onset.
+fn wedge_endpoints(
+    items: &[(f32, Item)],
+    bars: &[&crate::model::Barline],
+    marks: &[WedgeEndpoint],
+) -> Vec<Vec<WedgeEndpoint>> {
+    let mut endpoints: Vec<Vec<WedgeEndpoint>> = (0..=bars.len()).map(|_| vec![]).collect();
+    let mut rhythmic_segments = vec![];
+    for (x, item) in items {
+        if matches!(item, Item::Note(_) | Item::Rest(_)) {
+            let segment = bars.partition_point(|bar| bar.x <= *x);
+            if rhythmic_segments.last() != Some(&segment) {
+                rhythmic_segments.push(segment);
+            }
+        }
+    }
+    for endpoint in marks {
+        let target = bars.partition_point(|bar| bar.x <= endpoint.x);
+        if let Some(&segment) = rhythmic_segments
+            .iter()
+            .min_by_key(|&&segment| segment.abs_diff(target))
+        {
+            endpoints[segment].push(endpoint.clone());
         }
     }
     for segment in &mut endpoints {
@@ -584,19 +614,21 @@ fn combine_pages(pages: &[&Score], inspection: bool) -> Result<CombinedPages, St
                 lyric.note += note_offset;
                 lyric
             }));
-        combined
-            .staff_assignments
-            .extend(
-                page.staff_assignments
-                    .iter()
-                    .cloned()
-                    .map(|mut assignment| {
-                        assignment.staff += offset;
-                        assignment
-                    }),
-            );
         let mut staff_order: Vec<_> = (0..page.staves.len()).collect();
         staff_order.sort_by(|&a, &b| page.staves[a].lines[0].total_cmp(&page.staves[b].lines[0]));
+        // Give the export-only combined score a continuous system order across pages.
+        // Source image y coordinates restart on every page.
+        for (rank, &staff) in staff_order.iter().enumerate() {
+            let original = page.staff_assignments.iter().find(|a| a.staff == staff);
+            combined
+                .staff_assignments
+                .push(crate::model::StaffAssignment {
+                    staff: offset + staff,
+                    system: offset + rank,
+                    part: original.map_or(0, |a| a.part),
+                    name: original.map_or_else(String::new, |a| a.name.clone()),
+                });
+        }
         if let Some(first) = staff_order.first() {
             page_starts.insert(offset + first);
         }
@@ -623,12 +655,23 @@ fn combine_pages(pages: &[&Score], inspection: bool) -> Result<CombinedPages, St
             notes,
             rests,
             barlines,
-            spans,
             key_changes,
             time_changes,
             dynamics,
             repeat_marks
         );
+        combined
+            .spans
+            .extend(page.spans.iter().cloned().map(|mut span| {
+                span.staff += offset;
+                for anchor in [&mut span.start_anchor, &mut span.end_anchor]
+                    .into_iter()
+                    .flatten()
+                {
+                    anchor.note += note_offset;
+                }
+                span
+            }));
     }
     Ok((combined, order, page_starts))
 }
@@ -811,6 +854,16 @@ fn export_ordered(
     inspection: bool,
 ) -> Result<Export, String> {
     score.validate()?;
+    let tied_score = score
+        .spans
+        .iter()
+        .any(|s| s.kind == SpanKind::Tie)
+        .then(|| {
+            let mut normalized = score.clone();
+            normalized.carry_tie_accidentals();
+            normalized
+        });
+    let score = tied_score.as_ref().unwrap_or(score);
     let divisions = score.rhythm_divisions();
     if title.chars().any(|character| !matches!(character, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')) {
         return Err(crate::i18n::tr("The title contains invalid XML characters.").into());
@@ -861,6 +914,7 @@ fn export_ordered(
     xml.end("part-list");
     let mut warnings = Warnings::default();
     let marks = span_marks(score, &mut warnings);
+    let wedge_marks = wedge_marks(score, &mut warnings);
     let unchecked = score.notes.iter().filter(|note| !note.confirmed).count()
         + score.rests.iter().filter(|rest| !rest.confirmed).count()
         + score.barlines.iter().filter(|bar| !bar.confirmed).count()
@@ -1016,7 +1070,7 @@ fn export_ordered(
                 .filter(|bar| bar.staff == staff_index)
                 .collect();
             bars.sort_by(|first, second| first.x.total_cmp(&second.x));
-            let wedges = wedge_endpoints(score, staff_index, &items, &bars, &mut warnings);
+            let wedges = wedge_endpoints(&items, &bars, &wedge_marks[staff_index]);
             if first && staff.header.time_signature.is_none() {
                 warnings.report(Issue::warning(
                 staff_index,
@@ -1277,6 +1331,8 @@ fn export_ordered(
                             .collect();
                         let mut elapsed = 0;
                         let mut onsets = vec![];
+                        let mut anchor_onsets = std::collections::HashMap::new();
+                        let mut previous_note_time = 0;
                         let mut previous_note: Option<&Note> = None;
                         for (position, item) in &voice_segment {
                             match *item {
@@ -1359,6 +1415,10 @@ fn export_ordered(
                                             && note_duration(previous, divisions)
                                                 == note_duration(note, divisions)
                                     });
+                                    if !chord {
+                                        previous_note_time = elapsed;
+                                    }
+                                    anchor_onsets.insert(index, previous_note_time);
                                     if !chord && !note.grace {
                                         onsets.push((*position, elapsed));
                                     }
@@ -1437,8 +1497,15 @@ fn export_ordered(
                                 }
                             }
                         }
-                        for endpoint in wedges[segment_index].iter().filter(|_| voice_index == 0) {
-                            let time = if count > 1 {
+                        for endpoint in wedges[segment_index].iter().filter(|e| {
+                            e.note
+                                .map_or(voice_index == 0, |i| score.notes[i].voice == voice)
+                        }) {
+                            let time = if let Some(onset) =
+                                endpoint.note.and_then(|i| anchor_onsets.get(&i))
+                            {
+                                *onset
+                            } else if count > 1 {
                                 // A multi-measure rest represents the entire printed interval.
                                 let total = measure_duration * u128::from(count);
                                 let time = interpolate_time(
@@ -1597,6 +1664,10 @@ mod tests {
             confirmed: true,
         });
         second.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Tie,
             start: [50.0, 50.0],
@@ -1959,7 +2030,7 @@ mod tests {
             );
             assert_eq!(
                 result.warnings,
-                ["1 ungepruefte Objekte werden mit exportiert."]
+                ["1 ungeprüfte Objekte werden mit exportiert."]
             );
             assert_eq!(serde_json::to_value(&score).unwrap(), original);
             score.notes.clear();
@@ -2192,7 +2263,7 @@ mod tests {
             assert!(!measures[index].contains("<clef>"));
         }
         assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
-        assert!(result.warnings[0].contains("vorheriger Schluessel beibehalten"));
+        assert!(result.warnings[0].contains("vorheriger Schlüssel beibehalten"));
     }
 
     #[test]
@@ -2215,7 +2286,7 @@ mod tests {
         let result = export(&score, "Test").unwrap();
         assert_xml(&result.xml);
         assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
-        assert!(result.warnings[0].contains("ungepruefte"));
+        assert!(result.warnings[0].contains("ungeprüfte"));
         assert_eq!(result.xml.matches("<chord/>").count(), 1);
         assert_eq!(result.xml.matches("<rest/>").count(), 1);
         let key = result.xml.find("<fifths>1</fifths>").unwrap();
@@ -2228,6 +2299,10 @@ mod tests {
         let mut score = score();
         for kind in SpanKind::ALL {
             score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind,
                 start: [50.0, 45.0],
@@ -2296,6 +2371,10 @@ mod tests {
                 score.rests[0].confirmed = true;
             }
             score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Decrescendo,
                 start: [200.0, 70.0],
@@ -2326,6 +2405,10 @@ mod tests {
         for (start, end) in [(50.0, 100.0), (100.0, 150.0)] {
             for height in [-10.0, 10.0] {
                 score.spans.push(Span {
+                    start_anchor: None,
+                    end_anchor: None,
+                    continuation: None,
+                    wedge_openings: None,
                     staff: 0,
                     kind: SpanKind::Tie,
                     start: [start, 45.0],
@@ -2364,6 +2447,10 @@ mod tests {
             });
         }
         score.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Crescendo,
             start: [200.0, 0.0],
@@ -2394,6 +2481,10 @@ mod tests {
         score.rests[0].measures = Some(2);
         score.rests[0].confirmed = true;
         score.spans.push(Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Crescendo,
             start: [125.0, 70.0],
@@ -2431,6 +2522,10 @@ mod tests {
             (SpanKind::Decrescendo, 100.0, 200.0),
         ] {
             score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind,
                 start: [start, 70.0],
@@ -2651,7 +2746,7 @@ mod tests {
             "4/4",
             "Vorzeichnung",
             "Violin-Annahme",
-            "ungepruefte",
+            "ungeprüfte",
             "Takt 1:",
         ] {
             assert!(

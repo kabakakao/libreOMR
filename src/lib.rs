@@ -1,3 +1,4 @@
+mod bow;
 pub mod diagnostics;
 pub mod i18n;
 pub mod model;

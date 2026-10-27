@@ -388,5 +388,9 @@
   "Voice {voice}: {actual}, expected {expected}": "Voice {voice}: {actual}, expected {expected}",
   "{count} objects selected": "{count} objects selected",
   "Delete selected objects": "Delete selected objects",
-  "Ctrl/Cmd+click: toggle selection; Shift+click: select range.": "Ctrl/Cmd+click: toggle selection; Shift+click: select range."
+  "Ctrl/Cmd+click: toggle selection; Shift+click: select range.": "Ctrl/Cmd+click: toggle selection; Shift+click: select range.",
+  "Drag endpoints onto notes or select the notes below.": "Drag endpoints onto notes or select the notes below.",
+  "Flip bow": "Flip bow",
+  "Free endpoint": "Free endpoint",
+  "Staff {staff}, note {note}: {pitch}": "Staff {staff}, note {note}: {pitch}"
 }

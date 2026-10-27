@@ -1,5 +1,9 @@
 use std::sync::OnceLock;
 
+#[cfg(test)]
+mod time_change_tests;
+mod time_changes;
+
 use ab_glyph::{Font, FontRef};
 use image::{
     GrayImage, Luma,
@@ -2257,18 +2261,7 @@ pub(crate) fn recognize_time_changes(
     staff_index: usize,
     bars: &[Barline],
 ) -> Vec<TimeChange> {
-    static TEMPLATES: OnceLock<Vec<(TimeSignature, GrayImage)>> = OnceLock::new();
-    let templates = TEMPLATES.get_or_init(|| {
-        [TimeSignature::Common, TimeSignature::Cut]
-            .into_iter()
-            .chain((1..=32).flat_map(|beats| {
-                [1, 2, 4, 8, 16, 32]
-                    .into_iter()
-                    .map(move |beat_unit| TimeSignature::Meter { beats, beat_unit })
-            }))
-            .map(|meter| (meter, meter_template(meter)))
-            .collect()
-    });
+    let templates = time_changes::templates();
     let gap = staff.spacing();
     let header_end = [&staff.header.clef_bounds, &staff.header.time_bounds]
         .into_iter()
@@ -2308,46 +2301,35 @@ pub(crate) fn recognize_time_changes(
                 after_bar && x as f32 <= UNIT * 0.3 && ink as f32 >= (bottom - top + 1) as f32 * 0.9
             })
             .collect();
+        let mut search = time_changes::MeterSearch::new(&image);
         let mut candidates = Vec::new();
-        for (meter, template) in templates {
-            let heights: &[f32] = match meter {
-                TimeSignature::Common => &[1.7, 1.9, 2.1, 2.3],
-                TimeSignature::Cut => &[2.8, 3.1, 3.4],
-                _ => &[3.6, 3.7, 3.8, 3.9, 4.0, 4.1, 4.2],
-            };
-            if let Some(found) = image
-                .find_filtered(
-                    template,
-                    heights,
-                    [
-                        0.0,
-                        image.staff_top - 0.4 * UNIT,
-                        image.image.width() as f32,
-                        image.staff_top + 4.4 * UNIT,
-                    ],
-                    |bounds| {
-                        if ((bounds.top + bounds.bottom) * 0.5 - local.lines[2]).abs() > gap * 0.3 {
-                            return false;
-                        }
-                        // Reject a single digit matched inside a wider number.
-                        let x0 = ((bounds.left - image.left) * image.scale).round() as u32;
-                        let x1 = ((bounds.right - image.left) * image.scale).round() as u32;
-                        let y0 = ((bounds.top - image.top) * image.scale).round() as u32;
-                        let y1 = ((bounds.bottom - image.top) * image.scale).round() as u32;
-                        let mut outside = 0;
-                        for y in y0.saturating_sub(2)..(y1 + 2).min(image.image.height()) {
-                            for x in x0.saturating_sub(2)..(x1 + 2).min(image.image.width()) {
-                                if (x < x0 || x >= x1 || y < y0 || y >= y1)
-                                    && image.image.get_pixel(x, y)[0] > 127
-                                    && !((x < x0 || x >= x1) && bar_columns[x as usize])
-                                {
-                                    outside += 1;
+        for (meter, templates) in templates {
+            if let Some(found) = search
+                .find(templates, |bounds| {
+                    if ((bounds.top + bounds.bottom) * 0.5 - local.lines[2]).abs() > gap * 0.3 {
+                        return false;
+                    }
+                    // Reject a single digit matched inside a wider number.
+                    let x0 = ((bounds.left - image.left) * image.scale).round() as u32;
+                    let x1 = ((bounds.right - image.left) * image.scale).round() as u32;
+                    let y0 = ((bounds.top - image.top) * image.scale).round() as u32;
+                    let y1 = ((bounds.bottom - image.top) * image.scale).round() as u32;
+                    let mut outside = 0;
+                    for y in y0.saturating_sub(2)..(y1 + 2).min(image.image.height()) {
+                        for x in x0.saturating_sub(2)..(x1 + 2).min(image.image.width()) {
+                            if (x < x0 || x >= x1 || y < y0 || y >= y1)
+                                && image.image.get_pixel(x, y)[0] > 127
+                                && !((x < x0 || x >= x1) && bar_columns[x as usize])
+                            {
+                                outside += 1;
+                                if outside > 4 {
+                                    return false;
                                 }
                             }
                         }
-                        outside <= 4
-                    },
-                )
+                    }
+                    outside <= 4
+                })
                 .filter(|found| found.quality >= 0.86)
             {
                 candidates.push((*meter, found));

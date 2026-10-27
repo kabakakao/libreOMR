@@ -621,6 +621,23 @@ pub fn attach_text(score: &mut Score, text: Vec<TextGlyph>) {
 
 impl Score {
     pub fn remove_note(&mut self, index: usize) {
+        // An attached span must never silently jump to a different note.
+        self.spans.retain(|span| {
+            ![&span.start_anchor, &span.end_anchor]
+                .into_iter()
+                .flatten()
+                .any(|a| a.note == index)
+        });
+        for span in &mut self.spans {
+            for anchor in [&mut span.start_anchor, &mut span.end_anchor]
+                .into_iter()
+                .flatten()
+            {
+                if anchor.note > index {
+                    anchor.note -= 1;
+                }
+            }
+        }
         self.notes.remove(index);
         self.lyrics.retain(|l| l.note != index);
         for lyric in &mut self.lyrics {

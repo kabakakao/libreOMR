@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod bow_tests;
+#[cfg(test)]
 mod multiselect_tests;
 mod problems;
 
@@ -897,7 +899,13 @@ impl App {
                     .spans
                     .iter()
                     .enumerate()
-                    .map(|(index, span)| (span.staff, span.start[0], Object::Span(index))),
+                    .map(|(index, span)| {
+                        (
+                            span.staff,
+                            self.page.score.resolved_span(span).start[0],
+                            Object::Span(index),
+                        )
+                    }),
             )
             .chain(
                 self.page
@@ -1265,6 +1273,10 @@ impl App {
                 }
                 Insert::Span(kind) => {
                     self.page.score.spans.push(Span {
+                        start_anchor: None,
+                        end_anchor: None,
+                        continuation: None,
+                        wedge_openings: None,
                         staff: staff_index,
                         kind,
                         start: position.into(),
@@ -1377,6 +1389,7 @@ impl App {
         if let Some(Object::Span(index)) = self.page.selected_object
             && let Some(span) = self.page.score.spans.get(index)
         {
+            let span = self.page.score.resolved_span(span);
             for (right, point) in [(false, span.start), (true, span.end)] {
                 if (Vec2::from(point) - position).length() * self.page.zoom <= 10.0 {
                     return Some(DragTarget::Anchor(index, right));
@@ -1499,7 +1512,7 @@ impl App {
                 hits.push((distance, Object::Barline(index)));
             }
         }
-        for (index, span) in self.page.score.spans.iter().enumerate() {
+        for (index, span) in self.page.score.drawable_spans() {
             let distance = if matches!(span.kind, SpanKind::Slur | SpanKind::Tie) {
                 (0..40)
                     .map(|step| {
@@ -1513,13 +1526,8 @@ impl App {
                 [-1.0, 1.0]
                     .into_iter()
                     .map(|side| {
-                        let mut start = span.start;
-                        let mut end = span.end;
-                        if span.kind == SpanKind::Crescendo {
-                            end[1] += side * span.height;
-                        } else {
-                            start[1] += side * span.height;
-                        }
+                        let start = span.wedge_point(0.0, side);
+                        let end = span.wedge_point(1.0, side);
                         segment_distance(start, end)
                     })
                     .fold(f32::INFINITY, f32::min)
@@ -1646,37 +1654,95 @@ impl App {
                 self.page.score.recompute_accidentals();
             }
             DragTarget::Body(Object::Span(index)) => {
-                let original = &drag.score.spans[index];
+                let original = drag.score.resolved_span(&drag.score.spans[index]);
                 let staff = &self.page.score.staves[original.staff];
+                let end_staff = original.end_anchor.as_ref().map_or(staff, |a| {
+                    &self.page.score.staves[self.page.score.notes[a.note].staff]
+                });
                 let shift_x = delta.x.clamp(
-                    staff.left - original.start[0],
-                    staff.right - original.end[0],
+                    (staff.left - original.start[0]).max(end_staff.left - original.end[0]),
+                    (staff.right - original.start[0]).min(end_staff.right - original.end[0]),
                 );
                 let shift_y = delta.y.clamp(
                     -original.start[1].min(original.end[1]),
                     self.page.image.height() as f32 - 1.0 - original.start[1].max(original.end[1]),
                 );
                 let span = &mut self.page.score.spans[index];
+                for (anchor, source) in [
+                    (&mut span.start_anchor, &original.start_anchor),
+                    (&mut span.end_anchor, &original.end_anchor),
+                ] {
+                    if let (Some(anchor), Some(source)) = (anchor, source) {
+                        anchor.offset = [source.offset[0] + shift_x, source.offset[1] + shift_y];
+                    }
+                }
                 span.start = [original.start[0] + shift_x, original.start[1] + shift_y];
                 span.end = [original.end[0] + shift_x, original.end[1] + shift_y];
+                if let (Some(c), Some(source)) = (&mut span.continuation, &original.continuation) {
+                    c.exit_y = source.exit_y + shift_y / staff.spacing();
+                    c.entry_y = source.entry_y + shift_y / end_staff.spacing();
+                }
                 span.confirmed = true;
             }
             DragTarget::Anchor(index, right) => {
-                let original = &drag.score.spans[index];
+                let original = drag.score.resolved_span(&drag.score.spans[index]);
+                let source = if right { original.end } else { original.start };
+                let target = [source[0] + delta.x, source[1] + delta.y];
+                {
+                    let nearest = self
+                        .page
+                        .score
+                        .notes
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, note)| {
+                            let gap = self.page.score.staves[note.staff].spacing();
+                            let distance = ((note.x - target[0]).powi(2)
+                                + (note.y - target[1]).powi(2))
+                            .sqrt()
+                                / gap;
+                            (distance <= 1.5).then_some((i, distance))
+                        })
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(i, _)| i);
+                    if let Some(note) = nearest {
+                        let mut span = original.clone();
+                        if self.page.score.attach_span_note(&mut span, right, note) {
+                            self.page.selected_staff = span.staff;
+                            self.page.score.spans[index] = span;
+                            self.page.score.recompute_accidentals();
+                            return;
+                        }
+                    }
+                    if original
+                        .end_anchor
+                        .as_ref()
+                        .is_some_and(|a| self.page.score.notes[a.note].staff != original.staff)
+                    {
+                        return;
+                    }
+                }
                 let staff = &self.page.score.staves[original.staff];
                 let span = &mut self.page.score.spans[index];
+                if right {
+                    span.end_anchor = None;
+                } else {
+                    span.start_anchor = None;
+                }
                 let (point, min_x, max_x) = if right {
                     (&mut span.end, original.start[0] + 1.0, staff.right)
                 } else {
                     (&mut span.start, staff.left, original.end[0] - 1.0)
                 };
-                let source = if right { original.end } else { original.start };
                 *point = [
                     (source[0] + delta.x).clamp(min_x, max_x),
                     (source[1] + delta.y).clamp(0.0, self.page.image.height() as f32 - 1.0),
                 ];
                 span.confirmed = true;
             }
+        }
+        if matches!(drag.target, DragTarget::Anchor(_, _)) {
+            self.page.score.recompute_accidentals();
         }
     }
 
@@ -2771,16 +2837,23 @@ impl App {
             return;
         }
         objects.sort_by_key(|o| {
-            std::cmp::Reverse(match *o {
-                Object::Note(i)
-                | Object::Rest(i)
-                | Object::Barline(i)
-                | Object::Span(i)
-                | Object::KeyChange(i)
-                | Object::TimeChange(i)
-                | Object::Dynamic(i)
-                | Object::RepeatMark(i) => i,
-            })
+            (
+                match o {
+                    Object::Span(_) => 0,
+                    Object::Note(_) => 2,
+                    _ => 1,
+                },
+                std::cmp::Reverse(match *o {
+                    Object::Note(i)
+                    | Object::Rest(i)
+                    | Object::Barline(i)
+                    | Object::Span(i)
+                    | Object::KeyChange(i)
+                    | Object::TimeChange(i)
+                    | Object::Dynamic(i)
+                    | Object::RepeatMark(i) => i,
+                }),
+            )
         });
         self.snapshot();
         for object in objects {
@@ -3295,6 +3368,7 @@ impl App {
             let Some(span) = self.page.score.spans.get(edit.index) else {
                 return;
             };
+            let span = self.page.score.resolved_span(span);
             let origin = Vec2::from(if edit.right { span.end } else { span.start });
             self.select_object(Some(Object::Span(edit.index)));
             self.snapshot();
@@ -3530,7 +3604,13 @@ impl App {
         let Some(staff) = self.page.score.staves.get(self.page.selected_staff) else {
             return;
         };
-        let mut spans = self.page.score.spans.clone();
+        let mut spans: Vec<_> = self
+            .page
+            .score
+            .spans
+            .iter()
+            .map(|s| self.page.score.resolved_span(s))
+            .collect();
         let mut changed = false;
         let gap = staff.spacing();
         ui.push_id(("spans", self.page.selected_staff), |ui| {
@@ -3552,6 +3632,8 @@ impl App {
                                         .selectable_value(&mut span.kind, kind, kind.label())
                                         .changed()
                                     {
+                                        span.continuation = None;
+                                        span.wedge_openings = None;
                                         if matches!(
                                             kind,
                                             SpanKind::Crescendo | SpanKind::Decrescendo
@@ -3571,12 +3653,17 @@ impl App {
                         }
                     });
                     let gabel = matches!(span.kind, SpanKind::Crescendo | SpanKind::Decrescendo);
+                    if !gabel && ui.button(i18n::tr("Flip bow")).clicked() {
+                        span.flip();
+                        changed = true;
+                    }
                     ui.label(if gabel {
                         i18n::tr("Opening")
                     } else {
                         i18n::tr("Curvature")
                     });
-                    changed |= ui
+                    let previous_height = span.height;
+                    let curvature_changed = ui
                         .add(
                             egui::DragValue::new(&mut span.height)
                                 .range(if gabel {
@@ -3587,8 +3674,28 @@ impl App {
                                 .speed(0.5),
                         )
                         .changed();
+                    if curvature_changed && let Some(c) = &mut span.continuation {
+                        let factor = if previous_height.abs() > 0.001 {
+                            span.height / previous_height
+                        } else {
+                            1.0
+                        };
+                        c.exit_height = if previous_height.abs() > 0.001 {
+                            c.exit_height * factor
+                        } else {
+                            span.height / gap
+                        };
+                        c.entry_height = if previous_height.abs() > 0.001 {
+                            c.entry_height * factor
+                        } else {
+                            span.height / gap
+                        };
+                    }
+                    changed |= curvature_changed;
                     ui.strong(i18n::tr("Anchor"));
-                    ui.weak(i18n::tr("Drag endpoints in the scan or preview."));
+                    ui.weak(i18n::tr(
+                        "Drag endpoints onto notes or select the notes below.",
+                    ));
                     let mut anchors_changed = false;
                     for right in [false, true] {
                         ui.label(if right {
@@ -3596,10 +3703,98 @@ impl App {
                         } else {
                             i18n::tr("Start")
                         });
-                        let (minimum, maximum) = if right {
-                            (span.start[0] + 1.0, staff.right)
+                        {
+                            let current = if right {
+                                &span.end_anchor
+                            } else {
+                                &span.start_anchor
+                            };
+                            let label = |index: usize| {
+                                let note = &self.page.score.notes[index];
+                                i18n::format(
+                                    "Staff {staff}, note {note}: {pitch}",
+                                    &[
+                                        ("staff", (note.staff + 1).to_string()),
+                                        ("note", (index + 1).to_string()),
+                                        ("pitch", note.pitch_label()),
+                                    ],
+                                )
+                            };
+                            let mut choice = current.as_ref().map(|a| a.note);
+                            egui::ComboBox::from_id_salt(("note_anchor", right))
+                                .selected_text(
+                                    choice.map_or_else(
+                                        || i18n::tr("Free endpoint").to_string(),
+                                        label,
+                                    ),
+                                )
+                                .show_ui(ui, |ui| {
+                                    let rows = self.page.score.bow_staves(span.staff);
+                                    let mut notes: Vec<_> = self
+                                        .page
+                                        .score
+                                        .notes
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, n)| rows.contains(&n.staff))
+                                        .collect();
+                                    notes.sort_by(|a, b| {
+                                        a.1.staff
+                                            .cmp(&b.1.staff)
+                                            .then(a.1.x.total_cmp(&b.1.x))
+                                            .then(a.1.y.total_cmp(&b.1.y))
+                                    });
+                                    for (note, _) in notes {
+                                        let mut proposal = span.clone();
+                                        if self.page.score.attach_span_note(
+                                            &mut proposal,
+                                            right,
+                                            note,
+                                        ) {
+                                            ui.selectable_value(
+                                                &mut choice,
+                                                Some(note),
+                                                label(note),
+                                            );
+                                        }
+                                    }
+                                });
+                            if choice != current.as_ref().map(|a| a.note)
+                                && let Some(note) = choice
+                            {
+                                changed |= self.page.score.attach_span_note(span, right, note);
+                            }
+                        }
+                        let endpoint_staff = if right {
+                            span.end_anchor
+                                .as_ref()
+                                .map_or(span.staff, |a| self.page.score.notes[a.note].staff)
                         } else {
-                            (staff.left, span.end[0] - 1.0)
+                            span.staff
+                        };
+                        let endpoint_staff = &self.page.score.staves[endpoint_staff];
+                        let crosses = span
+                            .end_anchor
+                            .as_ref()
+                            .is_some_and(|a| self.page.score.notes[a.note].staff != span.staff);
+                        let (minimum, maximum) = if right {
+                            (
+                                if crosses {
+                                    endpoint_staff.left
+                                } else {
+                                    span.start[0] + 1.0
+                                },
+                                endpoint_staff.right,
+                            )
+                        } else {
+                            (
+                                endpoint_staff.left,
+                                if crosses {
+                                    endpoint_staff.right
+                                } else {
+                                    span.end[0] - 1.0
+                                },
+                            )
                         };
                         let point = if right {
                             &mut span.end
@@ -3626,6 +3821,15 @@ impl App {
                                 )
                                 .changed();
                         });
+                        let anchor = if right {
+                            &mut span.end_anchor
+                        } else {
+                            &mut span.start_anchor
+                        };
+                        if let Some(anchor) = anchor {
+                            let note = &self.page.score.notes[anchor.note];
+                            anchor.offset = [point[0] - note.x, point[1] - note.y];
+                        }
                     }
                     if anchors_changed {
                         span.confirmed = true;
@@ -3634,8 +3838,10 @@ impl App {
                     changed |= ui
                         .checkbox(&mut span.confirmed, i18n::tr("Reviewed"))
                         .changed();
-                    span.start[0] = span.start[0].min(staff.right - 1.0);
-                    span.end[0] = span.end[0].max(span.start[0] + 1.0);
+                    if span.start_anchor.is_none() && span.end_anchor.is_none() {
+                        span.start[0] = span.start[0].min(staff.right - 1.0);
+                        span.end[0] = span.end[0].max(span.start[0] + 1.0);
+                    }
                     ui.separator();
                 });
             }
@@ -3650,59 +3856,130 @@ impl App {
         if changed {
             self.snapshot();
             self.page.score.spans = spans;
+            self.page.score.recompute_accidentals();
+            if let Some(Object::Span(index)) = self.page.selected_object {
+                self.page.selected_staff = self.page.score.spans[index].staff;
+            }
         }
     }
 
     fn add_span(&mut self, kind: SpanKind) {
-        let Some(staff) = self.page.score.staves.get(self.page.selected_staff) else {
+        let gabel = matches!(kind, SpanKind::Crescendo | SpanKind::Decrescendo);
+        let mut chosen: Vec<_> = self
+            .page
+            .selection
+            .iter()
+            .filter_map(|o| {
+                if let Object::Note(i) = o {
+                    Some(*i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        chosen.sort_by(|&a, &b| {
+            self.page.score.notes[a]
+                .staff
+                .cmp(&self.page.score.notes[b].staff)
+                .then(
+                    self.page.score.notes[a]
+                        .x
+                        .total_cmp(&self.page.score.notes[b].x),
+                )
+        });
+        let first = if chosen.len() >= 2 {
+            chosen.first().copied()
+        } else {
+            self.page.selected
+        }
+        .or_else(|| {
+            self.page
+                .score
+                .notes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.staff == self.page.selected_staff)
+                .min_by(|a, b| a.1.x.total_cmp(&b.1.x))
+                .map(|(i, _)| i)
+        });
+        let last = if chosen.len() >= 2 {
+            chosen.last().copied()
+        } else {
+            first.and_then(|first| {
+                self.page
+                    .score
+                    .notes
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, n)| {
+                        n.staff == self.page.score.notes[first].staff
+                            && self.page.score.bow_note_order(first, *i)
+                    })
+                    .min_by(|a, b| a.1.x.total_cmp(&b.1.x))
+                    .map(|(i, _)| i)
+            })
+        };
+        let staff_index =
+            first.map_or(self.page.selected_staff, |i| self.page.score.notes[i].staff);
+        let Some(staff) = self.page.score.staves.get(staff_index) else {
             return;
         };
         let gap = staff.spacing();
-        let mut notes: Vec<_> = self
-            .page
-            .score
-            .notes
-            .iter()
-            .filter(|note| note.staff == self.page.selected_staff)
-            .collect();
-        notes.sort_by(|first, second| first.x.total_cmp(&second.x));
-        let first = self
-            .page
-            .selected
-            .and_then(|index| self.page.score.notes.get(index))
-            .filter(|note| note.staff == self.page.selected_staff)
-            .or_else(|| notes.first().copied());
-        let last = first.and_then(|first| {
-            notes
-                .iter()
-                .find(|note| note.x > first.x + gap * 0.3)
-                .copied()
+        let start_x = first.map_or(staff.left + (staff.right - staff.left) * 0.25, |i| {
+            self.page.score.notes[i].x
         });
-        let start_x = first.map_or(staff.left + (staff.right - staff.left) * 0.25, |note| {
-            note.x
+        let end_x = last.map_or((start_x + gap * 4.0).min(staff.right), |i| {
+            self.page.score.notes[i].x
         });
-        let end_x = last.map_or((start_x + gap * 4.0).min(staff.right), |note| note.x);
-        if end_x <= start_x {
+        let end_staff = last.map_or(staff_index, |i| self.page.score.notes[i].staff);
+        if end_staff == staff_index && end_x <= start_x {
             return;
         }
-        let gabel = matches!(kind, SpanKind::Crescendo | SpanKind::Decrescendo);
+        if end_staff != staff_index
+            && !first
+                .zip(last)
+                .is_some_and(|(a, b)| self.page.score.bow_note_order(a, b))
+        {
+            return;
+        }
+        let endpoint = |i: usize| {
+            let note = &self.page.score.notes[i];
+            libreomr::model::NoteAnchor {
+                note: i,
+                offset: [
+                    0.0,
+                    if gabel {
+                        let row = &self.page.score.staves[note.staff];
+                        row.lines[4] + row.spacing() * 2.0 - note.y
+                    } else {
+                        -self.page.score.staves[note.staff].spacing()
+                    },
+                ],
+            }
+        };
         let span = Span {
-            staff: self.page.selected_staff,
+            staff: staff_index,
             kind,
+            start_anchor: first.map(endpoint),
+            end_anchor: last.map(endpoint),
+            continuation: None,
+            wedge_openings: None,
             start: [
                 start_x,
                 if gabel {
                     staff.lines[4] + gap * 2.0
                 } else {
-                    first.map_or(staff.lines[0], |note| note.y) - gap
+                    first.map_or(staff.lines[0], |i| self.page.score.notes[i].y) - gap
                 },
             ],
             end: [
                 end_x,
                 if gabel {
-                    staff.lines[4] + gap * 2.0
+                    let row = &self.page.score.staves[end_staff];
+                    row.lines[4] + row.spacing() * 2.0
                 } else {
-                    last.map_or(staff.lines[0], |note| note.y) - gap
+                    last.map_or(staff.lines[0], |i| self.page.score.notes[i].y)
+                        - self.page.score.staves[end_staff].spacing()
                 },
             ],
             height: if gabel { gap * 0.5 } else { -gap },
@@ -3710,6 +3987,7 @@ impl App {
         };
         self.snapshot();
         self.page.score.spans.push(span);
+        self.page.score.recompute_accidentals();
         self.select_object(Some(Object::Span(self.page.score.spans.len() - 1)));
     }
 
@@ -4857,7 +5135,10 @@ impl App {
                                         self.page.score.barlines[index].x
                                     }
                                     Some(Object::Span(index)) => {
-                                        self.page.score.spans[index].start[0]
+                                        self.page
+                                            .score
+                                            .resolved_span(&self.page.score.spans[index])
+                                            .start[0]
                                     }
                                     Some(Object::KeyChange(index)) => {
                                         self.page.score.key_changes[index].x
@@ -5215,11 +5496,11 @@ impl App {
                                 }
                             }
                         }
-                        for (index, span) in self.page.score.spans.iter().enumerate() {
+                        for (index, span) in self.page.score.drawable_spans() {
                             let selected = self.object_selected(Object::Span(index));
                             crate::preview::paint_span(
                                 ui.painter(),
-                                span,
+                                &span,
                                 |point| map(point[0], point[1]),
                                 if selected {
                                     Color32::from_rgb(0, 95, 180)
@@ -5232,7 +5513,38 @@ impl App {
                             );
                             if selected {
                                 for (right, point) in [(false, span.start), (true, span.end)] {
+                                    let original = &self.page.score.spans[index];
+                                    let endpoint_staff = if right {
+                                        original
+                                            .end_anchor
+                                            .as_ref()
+                                            .map(|a| self.page.score.notes[a.note].staff)
+                                            .unwrap_or(original.staff)
+                                    } else {
+                                        original.staff
+                                    };
+                                    if endpoint_staff != span.staff {
+                                        continue;
+                                    }
                                     let center = map(point[0], point[1]);
+                                    let anchor = if right {
+                                        &original.end_anchor
+                                    } else {
+                                        &original.start_anchor
+                                    };
+                                    if let Some(anchor) = anchor {
+                                        let note = &self.page.score.notes[anchor.note];
+                                        let attached = map(note.x, note.y);
+                                        ui.painter().line_segment(
+                                            [center, attached],
+                                            Stroke::new(1.0_f32, Color32::from_rgb(0, 95, 180)),
+                                        );
+                                        ui.painter().circle_stroke(
+                                            attached,
+                                            4.0,
+                                            Stroke::new(1.5_f32, Color32::from_rgb(0, 95, 180)),
+                                        );
+                                    }
                                     ui.painter().circle_filled(center, 6.0, Color32::WHITE);
                                     ui.painter().circle_stroke(
                                         center,
@@ -8352,6 +8664,10 @@ mod tests {
     fn objects_follow_staff_and_position_and_anchors_stay_ordered() {
         let mut app = demo_app();
         app.page.score.spans = vec![Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Slur,
             start: [250.0, 90.0],
@@ -8709,6 +9025,10 @@ mod tests {
                 confirmed: false,
             });
             app.page.score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Slur,
                 start: [250.0, 70.0],
@@ -9022,6 +9342,10 @@ mod tests {
                 confirmed: false,
             });
             app.page.score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Slur,
                 start: [250.0, 70.0],
@@ -9264,6 +9588,10 @@ mod tests {
                 confirmed: false,
             }];
             app.page.score.spans = vec![Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Slur,
                 start: [250.0, 70.0],
@@ -9513,6 +9841,10 @@ mod tests {
                         confirmed: false,
                     }];
                     app.page.score.spans = vec![Span {
+                        start_anchor: None,
+                        end_anchor: None,
+                        continuation: None,
+                        wedge_openings: None,
                         staff: 0,
                         kind: SpanKind::Slur,
                         start: [250.0, 70.0],
@@ -9713,6 +10045,10 @@ mod tests {
                         app.page.score.add_note(x, 108.0).unwrap();
                     }
                     app.page.score.spans.push(Span {
+                        start_anchor: None,
+                        end_anchor: None,
+                        continuation: None,
+                        wedge_openings: None,
                         staff: 0,
                         kind,
                         start: [160.0, 138.0],
@@ -10449,6 +10785,10 @@ mod tests {
                 confirmed: false,
             });
             app.page.score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Slur,
                 start: [250.0, 70.0],

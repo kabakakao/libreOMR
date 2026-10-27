@@ -800,13 +800,60 @@ impl SpanKind {
 pub struct Span {
     pub staff: usize,
     pub kind: SpanKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_anchor: Option<NoteAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_anchor: Option<NoteAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<BowContinuation>,
+    /// Relative openings at the visible ends of a wedge fragment (0 = closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wedge_openings: Option<[f32; 2]>,
     pub start: [f32; 2],
     pub end: [f32; 2],
     pub height: f32,
     pub confirmed: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteAnchor {
+    pub note: usize,
+    pub offset: [f32; 2],
+}
+
+/// Geometry at one system break, relative to each row's top line and spacing.
+/// Heights store bow curvature or the half-opening of a dynamic wedge.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BowContinuation {
+    pub exit_x: f32,
+    pub entry_x: f32,
+    pub exit_y: f32,
+    pub entry_y: f32,
+    pub exit_height: f32,
+    pub entry_height: f32,
+}
+
 impl Span {
+    pub fn wedge_opening(&self, fraction: f32) -> f32 {
+        let [start, end] = self
+            .wedge_openings
+            .unwrap_or(if self.kind == SpanKind::Crescendo {
+                [0.0, 1.0]
+            } else {
+                [1.0, 0.0]
+            });
+        self.height * (start + (end - start) * fraction)
+    }
+
+    pub fn wedge_point(&self, fraction: f32, side: f32) -> [f32; 2] {
+        [
+            self.start[0] + (self.end[0] - self.start[0]) * fraction,
+            self.start[1]
+                + (self.end[1] - self.start[1]) * fraction
+                + side * self.wedge_opening(fraction),
+        ]
+    }
+
     pub fn curve_point(&self, fraction: f32) -> [f32; 2] {
         [
             self.start[0] + (self.end[0] - self.start[0]) * fraction,
@@ -914,6 +961,7 @@ impl Score {
     }
 
     pub fn recompute_accidentals(&mut self) {
+        let previous: Vec<_> = self.notes.iter().map(|note| note.accidental).collect();
         for (staff_index, staff) in self.staves.iter().enumerate() {
             let mut bars: Vec<_> = self
                 .barlines
@@ -968,9 +1016,14 @@ impl Score {
                     });
                     if note.accidental != value {
                         note.accidental = value;
-                        note.confirmed = false;
                     }
                 }
+            }
+        }
+        self.carry_tie_accidentals();
+        for (note, previous) in self.notes.iter_mut().zip(previous) {
+            if note.accidental != previous {
+                note.confirmed = false;
             }
         }
     }
@@ -1163,17 +1216,29 @@ impl Score {
             }
         }
         for span in &self.spans {
+            if !self.valid_span_anchors(span) {
+                return Err(crate::i18n::tr("Invalid wedge, slur or tie in project.").into());
+            }
+            let segments = self.span_segments(span);
             if span
                 .start
                 .iter()
                 .chain(span.end.iter())
                 .chain(std::iter::once(&span.height))
                 .any(|value| !value.is_finite())
-                || self
-                    .staves
-                    .get(span.staff)
-                    .is_none_or(|staff| span.start[0] < staff.left || span.end[0] > staff.right)
-                || span.start[0] >= span.end[0]
+                || segments.is_empty()
+                || segments.iter().any(|segment| {
+                    segment
+                        .start
+                        .iter()
+                        .chain(segment.end.iter())
+                        .any(|v| !v.is_finite())
+                        || self.staves.get(segment.staff).is_none_or(|staff| {
+                            segment.start[0] < staff.left
+                                || segment.end[0] > staff.right
+                                || segment.start[0] >= segment.end[0]
+                        })
+                })
                 || (matches!(span.kind, SpanKind::Crescendo | SpanKind::Decrescendo)
                     && span.height <= 0.0)
             {
@@ -2006,6 +2071,10 @@ mod tests {
         assert!(score.spans.is_empty());
         for kind in SpanKind::ALL {
             score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind,
                 start: [30.0, 80.0],
@@ -2030,22 +2099,42 @@ mod tests {
         assert!(restored.validate().is_ok());
         for bad in [
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 1,
                 ..score.spans[0].clone()
             },
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 start: [180.0, 80.0],
                 ..score.spans[0].clone()
             },
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 end: [210.0, 80.0],
                 ..score.spans[0].clone()
             },
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 height: f32::NAN,
                 ..score.spans[0].clone()
             },
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 height: -1.0,
                 ..score.spans[0].clone()
             },
