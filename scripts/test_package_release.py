@@ -30,6 +30,7 @@ class PackagingTests(unittest.TestCase):
             "README.md": "Usage", "LICENSE": "Project license", "COPYRIGHT": "Project notice",
             "docs/localization.md": "Language files and settings",
             "assets/Bravura-LICENSE.txt": "OFL", "assets/libreomr-logo.png": "logo",
+            "assets/ocr/LICENSE.txt": "model license", "assets/ocr/README.md": "model provenance",
             "assets/screenshots/overview.png": "public screenshot",
             "examples/public-domain/README.md": "Public Domain source",
             "examples/public-domain/bach.pdf": "public score",
@@ -91,7 +92,7 @@ class PackagingTests(unittest.TestCase):
                             executable = "bundle/libreOMR.app/Contents/MacOS/libreomr"
                             self.assertEqual(bundle.getinfo(executable).external_attr >> 16 & 0o777, 0o755)
                             self.assertIn("bundle/libreOMR.app/Contents/Resources/libreomr.icns", names)
-                            for notice in ("LICENSE", "COPYRIGHT", "THIRD_PARTY_NOTICES.md", "licenses/dependency-1.0.0/LICENSE-MIT", "licenses/Bravura-LICENSE.txt"):
+                            for notice in ("LICENSE", "COPYRIGHT", "THIRD_PARTY_NOTICES.md", "licenses/dependency-1.0.0/LICENSE-MIT", "licenses/Bravura-LICENSE.txt", "licenses/ocr-models-LICENSE.txt"):
                                 self.assertIn(f"bundle/libreOMR.app/Contents/Resources/{notice}", names)
                         else:
                             self.assertIn("bundle/libreomr.exe", names)
@@ -105,7 +106,7 @@ class PackagingTests(unittest.TestCase):
                         self.assertIn(f"bundle/share/applications/{packaging.APP_ID}.desktop", names)
                         for size in packaging.ICON_SIZES:
                             self.assertIn(f"bundle/share/icons/hicolor/{size}x{size}/apps/{packaging.APP_ID}.png", names)
-                for expected in ("LICENSE", "COPYRIGHT", "THIRD_PARTY_NOTICES.md", "docs/localization.md", "examples/public-domain/bach.pdf", "licenses/dependency-1.0.0/LICENSE-MIT", "licenses/dependency-1.0.0/fonts/Hack-Regular.txt"):
+                for expected in ("LICENSE", "COPYRIGHT", "THIRD_PARTY_NOTICES.md", "docs/localization.md", "examples/public-domain/bach.pdf", "licenses/dependency-1.0.0/LICENSE-MIT", "licenses/dependency-1.0.0/fonts/Hack-Regular.txt", "licenses/ocr-models-LICENSE.txt", "licenses/ocr-models-README.md"):
                     self.assertIn(f"bundle/{expected}", names)
                 self.assertFalse(any("private.pdf" in name or "/target/" in name or "/local/" in name for name in names))
                 checksum = archive.with_name(archive.name + ".sha256").read_text()

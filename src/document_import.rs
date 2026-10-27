@@ -35,6 +35,14 @@ pub struct DocumentPage {
 }
 
 impl DocumentPage {
+    /// PDF Unicode and bounds in render coordinates; raster inputs have no text layer.
+    pub fn text(&self) -> Vec<crate::model::TextGlyph> {
+        match &self.document.kind {
+            DocumentKind::Pdf(pdf) => crate::pdf_text::extract(&pdf.pages()[self.index]),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn name(&self) -> String {
         let name = self
             .document

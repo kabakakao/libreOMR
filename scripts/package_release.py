@@ -76,6 +76,10 @@ def copy_notices(root, stage, data):
     destination = stage / "licenses"
     destination.mkdir()
     shutil.copy2(root / "assets/Bravura-LICENSE.txt", destination)
+    ocr_notices = root / "assets/ocr"
+    if ocr_notices.exists():
+        for name in ("LICENSE.txt", "README.md"):
+            shutil.copy2(ocr_notices / name, destination / f"ocr-models-{name}")
     supplemental = root / "assets/dependency-licenses"
     sources_path = supplemental / "sources.json"
     sources = json.loads(sources_path.read_text(encoding="utf-8")) if sources_path.exists() else {}

@@ -3,20 +3,26 @@ use serde::{Deserialize, Serialize};
 // Integral even for double-dotted 64th-note triplets.
 pub(crate) const TICKS_PER_QUARTER: u32 = 192;
 
+fn default_voice() -> u8 {
+    1
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Clef {
     #[default]
     Treble,
+    Treble8vb,
     Bass,
     Unknown,
 }
 
 impl Clef {
-    pub const ALL: [Self; 3] = [Self::Unknown, Self::Treble, Self::Bass];
+    pub const ALL: [Self; 4] = [Self::Unknown, Self::Treble, Self::Treble8vb, Self::Bass];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Treble => crate::i18n::tr("Treble clef"),
+            Self::Treble8vb => crate::i18n::tr("Treble clef (octave below)"),
             Self::Bass => crate::i18n::tr("Bass clef"),
             Self::Unknown => crate::i18n::tr("Unknown"),
         }
@@ -25,6 +31,7 @@ impl Clef {
     pub fn bottom_pitch(self) -> i32 {
         match self {
             Self::Bass => 18,
+            Self::Treble8vb => 23,
             Self::Treble | Self::Unknown => 30,
         }
     }
@@ -158,6 +165,8 @@ pub struct Rest {
     pub x: f32,
     pub y: f32,
     pub staff: usize,
+    #[serde(default = "default_voice")]
+    pub voice: u8,
     pub duration: Duration,
     #[serde(default)]
     pub dots: u8,
@@ -445,7 +454,7 @@ impl SymbolBounds {
         x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
     }
 
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         [self.left, self.top, self.right, self.bottom]
             .iter()
             .all(|value| value.is_finite())
@@ -570,6 +579,8 @@ pub struct Note {
     pub x: f32,
     pub y: f32,
     pub staff: usize,
+    #[serde(default = "default_voice")]
+    pub voice: u8,
     pub pitch: i32,
     pub accidental: i8,
     #[serde(default = "legacy_accidental_is_explicit")]
@@ -653,6 +664,12 @@ impl Note {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Score {
+    #[serde(default)]
+    pub staff_assignments: Vec<StaffAssignment>,
+    #[serde(default)]
+    pub lyrics: Vec<Lyric>,
+    #[serde(default)]
+    pub source_text: Vec<TextGlyph>,
     pub staves: Vec<Staff>,
     pub notes: Vec<Note>,
     #[serde(default)]
@@ -669,6 +686,73 @@ pub struct Score {
     pub dynamics: Vec<Dynamic>,
     #[serde(default)]
     pub repeat_marks: Vec<RepeatMark>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StaffAssignment {
+    pub staff: usize,
+    pub part: usize,
+    pub system: usize,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Syllabic {
+    #[default]
+    Single,
+    Begin,
+    Middle,
+    End,
+}
+
+impl Syllabic {
+    pub fn xml(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Begin => "begin",
+            Self::Middle => "middle",
+            Self::End => "end",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Lyric {
+    pub note: usize,
+    pub verse: u16,
+    #[serde(default, skip_serializing_if = "LyricPlacement::is_below")]
+    pub placement: LyricPlacement,
+    /// Printed label at the start of a verse, distinct from its syllable text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verse_label: Option<String>,
+    pub text: String,
+    pub syllabic: Syllabic,
+    pub extend: bool,
+    pub confirmed: bool,
+    pub bounds: Option<SymbolBounds>,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum LyricPlacement {
+    Above,
+    #[default]
+    Below,
+}
+
+impl LyricPlacement {
+    pub fn is_below(&self) -> bool {
+        *self == Self::Below
+    }
+}
+
+/// Positioned Unicode from the PDF, in the same pixel coordinates as its raster.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TextGlyph {
+    pub text: String,
+    pub baseline: f32,
+    pub bounds: SymbolBounds,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -792,7 +876,20 @@ impl Score {
         let mut order: Vec<_> = (0..self.staves.len()).collect();
         order.sort_by(|&a, &b| self.staves[a].lines[0].total_cmp(&self.staves[b].lines[0]));
         let mut meter = inherited;
+        let part = self
+            .staff_assignments
+            .iter()
+            .find(|a| a.staff == staff_index)
+            .map(|a| a.part);
         for index in order {
+            if let Some(part) = part
+                && !self
+                    .staff_assignments
+                    .iter()
+                    .any(|a| a.staff == index && a.part == part)
+            {
+                continue;
+            }
             meter = self.staves[index].header.time_signature.or(meter);
             if let Some(change) = self
                 .time_changes
@@ -918,6 +1015,7 @@ impl Score {
             x,
             y,
             staff: staff_index,
+            voice: 1,
             pitch,
             accidental: staff.accidental_at(pitch),
             accidental_explicit: false,
@@ -948,6 +1046,7 @@ impl Score {
             x,
             y,
             staff: staff_index,
+            voice: 1,
             duration,
             dots: 0,
             measures: None,
@@ -977,6 +1076,37 @@ impl Score {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut assigned = std::collections::HashSet::new();
+        for assignment in &self.staff_assignments {
+            if assignment.staff >= self.staves.len()
+                || !assigned.insert(assignment.staff)
+                || assignment.name.chars().any(invalid_xml_character)
+            {
+                return Err("Invalid staff/part assignment in project.".into());
+            }
+        }
+        let mut verses = std::collections::HashSet::new();
+        for lyric in &self.lyrics {
+            if lyric.note >= self.notes.len()
+                || lyric.verse == 0
+                || !verses.insert((lyric.note, lyric.verse, lyric.placement))
+                || lyric.text.chars().any(invalid_xml_character)
+                || lyric
+                    .verse_label
+                    .as_ref()
+                    .is_some_and(|label| label.chars().any(invalid_xml_character))
+                || lyric.bounds.as_ref().is_some_and(|bounds| !bounds.valid())
+            {
+                return Err("Invalid lyric in project.".into());
+            }
+        }
+        if self.source_text.iter().any(|text| {
+            !text.baseline.is_finite()
+                || !text.bounds.valid()
+                || text.text.chars().any(invalid_xml_character)
+        }) {
+            return Err("Invalid source text in project.".into());
+        }
         for mark in &self.repeat_marks {
             if !mark.x.is_finite()
                 || !mark.y.is_finite()
@@ -1091,6 +1221,7 @@ impl Score {
         }
         for note in &self.notes {
             if note.staff >= self.staves.len()
+                || !(1..=4).contains(&note.voice)
                 || !note.x.is_finite()
                 || !note.y.is_finite()
                 || !(0..=69).contains(&note.pitch)
@@ -1103,6 +1234,7 @@ impl Score {
         }
         for rest in &self.rests {
             if rest.staff >= self.staves.len()
+                || !(1..=4).contains(&rest.voice)
                 || !rest.x.is_finite()
                 || !rest.y.is_finite()
                 || rest.dots > 2
@@ -1117,6 +1249,10 @@ impl Score {
         }
         Ok(())
     }
+}
+
+fn invalid_xml_character(c: char) -> bool {
+    !matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1842,6 +1978,7 @@ mod tests {
             time_changes: vec![],
             dynamics: vec![],
             repeat_marks: vec![],
+            ..Score::default()
         };
         score.add_note(50.0, 60.0);
         let header = StaffHeader {
@@ -1961,6 +2098,7 @@ mod tests {
             time_changes: vec![],
             dynamics: vec![],
             repeat_marks: vec![],
+            ..Score::default()
         };
         score.add_note(40.0, 60.0);
         score.add_note(60.0, 55.0);
@@ -1988,6 +2126,7 @@ mod tests {
             time_changes: vec![],
             dynamics: vec![],
             repeat_marks: vec![],
+            ..Score::default()
         };
         score.add_note(40.0, 60.0);
         score.notes[0].articulation = Articulation::Staccato;

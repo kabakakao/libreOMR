@@ -63,14 +63,28 @@ pub fn straighten(image: GrayImage) -> GrayImage {
     if best_slope.abs() < 0.0001 || (best_score as f64) < original_score as f64 * 1.15 {
         return image;
     }
-    let baseline = detect_staves(&threshold(&image, 170, ThresholdType::Binary)).len();
+    let baseline = staff_line_candidates(
+        &threshold(&image, 170, ThresholdType::Binary),
+        0,
+        image.width(),
+        0.45,
+    )
+    .len();
     let aligned = imageproc::geometric_transformations::rotate_about_center(
         &image,
         -best_slope.atan(),
         imageproc::geometric_transformations::Interpolation::Bilinear,
         Luma([255]),
     );
-    if detect_staves(&threshold(&aligned, 170, ThresholdType::Binary)).len() > baseline {
+    if staff_line_candidates(
+        &threshold(&aligned, 170, ThresholdType::Binary),
+        0,
+        aligned.width(),
+        0.45,
+    )
+    .len()
+        > baseline
+    {
         aligned
     } else {
         image
@@ -98,6 +112,42 @@ impl RecognitionProgress {
 
 pub fn recognize(image: &GrayImage) -> Score {
     recognize_with_progress(image, |_| {})
+}
+
+pub fn recognize_with_text(
+    image: &GrayImage,
+    text: Vec<crate::model::TextGlyph>,
+    mut progress: impl FnMut(RecognitionProgress),
+) -> Result<Score, String> {
+    let mut score = recognize_with_progress(image, |mut step| {
+        step.total_steps = 14;
+        progress(step);
+    });
+    let text = if text.is_empty() {
+        progress(RecognitionProgress {
+            stage: "Recognize scanned text",
+            completed_steps: 12,
+            total_steps: 14,
+            staff: None,
+        });
+        crate::text_recognition::recognize(image, &score.staves)?
+    } else {
+        text
+    };
+    progress(RecognitionProgress {
+        stage: "Assign lyrics to notes",
+        completed_steps: 13,
+        total_steps: 14,
+        staff: None,
+    });
+    crate::score_structure::attach_text(&mut score, text);
+    progress(RecognitionProgress {
+        stage: "Recognition complete",
+        completed_steps: 14,
+        total_steps: 14,
+        staff: None,
+    });
+    Ok(score)
 }
 
 /// Recognize a page, reporting progress synchronously before each pipeline stage.
@@ -128,6 +178,14 @@ pub fn recognize_with_progress(
             Some((staff_index + 1, staff_count)),
         );
         staff.header = crate::symbols::recognize_header(&binary, staff);
+    }
+    crate::score_structure::complete_system_headers(&binary, &mut staves);
+    for (staff_index, staff) in staves.iter().enumerate() {
+        report(
+            2,
+            "Detect clefs, notes and rests",
+            Some((staff_index + 1, staff_count)),
+        );
         let staff_rests = crate::symbols::recognize_rests(&binary, staff, staff_index);
         notes.extend(detect_notes(&binary, staff, staff_index, &staff_rests));
         rests.extend(staff_rests);
@@ -281,6 +339,7 @@ pub fn recognize_with_progress(
     crate::symbols::recognize_articulations(&binary, &mut score);
     report(11, "Detect slurs, ties and dynamic wedges", None);
     score.spans = crate::spans::recognize(&binary, &score);
+    crate::score_structure::assign_parts(&binary, &mut score);
     report(12, "Recognition complete", None);
     score
 }
@@ -444,13 +503,18 @@ fn has_repeat_dots(binary: &GrayImage, staff: &Staff, edge: f32, direction: f32)
     })
 }
 
-fn detect_staves(binary: &GrayImage) -> Vec<Staff> {
+fn staff_line_candidates(
+    binary: &GrayImage,
+    left: u32,
+    right: u32,
+    coverage: f32,
+) -> Vec<[f32; 5]> {
     let mut bands: Vec<(u32, u32)> = Vec::new();
     for y in 0..binary.height() {
-        let dark = (0..binary.width())
+        let dark = (left..right)
             .filter(|&x| binary.get_pixel(x, y)[0] == 0)
             .count();
-        if dark as f32 > binary.width() as f32 * 0.45 {
+        if dark as f32 > (right - left) as f32 * coverage {
             if let Some(last) = bands.last_mut()
                 && last.1 + 1 == y
             {
@@ -474,8 +538,70 @@ fn detect_staves(binary: &GrayImage) -> Vec<Staff> {
                 .windows(2)
                 .all(|pair| ((pair[1] - pair[0]) - gap).abs() <= gap * 0.2)
         {
-            // Follow slightly curved or slanted staff ends instead of using
-            // one row, which can cut off a courtesy meter at the right edge.
+            staves.push(lines);
+            index += 5;
+        } else {
+            index += 1;
+        }
+    }
+    staves
+}
+
+fn detect_staves(binary: &GrayImage) -> Vec<Staff> {
+    let mut candidates = staff_line_candidates(binary, 0, binary.width(), 0.45);
+    // A curved scan can spread a staff line across too many rows for the full-
+    // width projection. Require the same five-line pattern in several strips.
+    let mut local = Vec::new();
+    for strip in 0..8 {
+        local.extend(
+            staff_line_candidates(
+                binary,
+                binary.width() * strip / 8,
+                binary.width() * (strip + 1) / 8,
+                0.65,
+            )
+            .into_iter()
+            .map(|lines| (strip, lines)),
+        );
+    }
+    local.sort_by(|a, b| a.1[2].total_cmp(&b.1[2]));
+    let mut groups: Vec<Vec<(u32, [f32; 5])>> = Vec::new();
+    for (strip, lines) in local {
+        let gap = (lines[4] - lines[0]) * 0.25;
+        if let Some(group) = groups.last_mut()
+            && (group.iter().map(|(_, l)| l[2]).sum::<f32>() / group.len() as f32 - lines[2]).abs()
+                < gap * 0.55
+        {
+            group.push((strip, lines));
+        } else {
+            groups.push(vec![(strip, lines)]);
+        }
+    }
+    for group in groups {
+        let mut strips: Vec<_> = group.iter().map(|(strip, _)| *strip).collect();
+        strips.sort_unstable();
+        strips.dedup();
+        if strips.len() < 3 {
+            continue;
+        }
+        let lines: [f32; 5] = std::array::from_fn(|i| {
+            group.iter().map(|(_, l)| l[i]).sum::<f32>() / group.len() as f32
+        });
+        let gap = (lines[4] - lines[0]) * 0.25;
+        // Keep established global rows, including when a lyric extender or
+        // ledger line creates a shifted five-line proposal in a local strip.
+        if !candidates
+            .iter()
+            .any(|prior| (prior[2] - lines[2]).abs() < gap * 2.0)
+        {
+            candidates.push(lines);
+        }
+    }
+    candidates.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    candidates
+        .into_iter()
+        .filter_map(|lines| {
+            let gap = (lines[4] - lines[0]) * 0.25;
             let on_staff = |x: u32| {
                 lines
                     .iter()
@@ -487,26 +613,32 @@ fn detect_staves(binary: &GrayImage) -> Vec<Staff> {
                     .count()
                     >= 4
             };
-            let middle = lines[2] as u32;
-            let left = (0..binary.width())
-                .find(|&x| binary.get_pixel(x, middle)[0] == 0)
-                .unwrap_or(0);
-            let right = (0..binary.width())
-                .rev()
-                .find(|&x| on_staff(x))
-                .unwrap_or(binary.width().saturating_sub(1));
-            staves.push(Staff {
+            // Ignore isolated vertical scan borders and labels; use the widest
+            // horizontal run supported by at least four of the five lines.
+            let mut spans: Vec<(u32, u32)> = Vec::new();
+            for x in (0..binary.width()).filter(|&x| on_staff(x)) {
+                if let Some(last) = spans.last_mut()
+                    && x - last.1 <= gap.ceil() as u32
+                {
+                    last.1 = x;
+                } else {
+                    spans.push((x, x));
+                }
+            }
+            let (left, right) = spans
+                .into_iter()
+                .max_by_key(|&(left, right)| right - left)?;
+            if ((right - left) as f32) < (binary.width() as f32 * 0.3).max(gap * 12.0) {
+                return None;
+            }
+            Some(Staff {
                 lines,
                 left: left as f32,
                 right: right as f32,
                 header: StaffHeader::default(),
-            });
-            index += 5;
-        } else {
-            index += 1;
-        }
-    }
-    staves
+            })
+        })
+        .collect()
 }
 
 fn detect_notes(
@@ -634,6 +766,7 @@ fn detect_notes(
             x,
             y,
             staff: staff_index,
+            voice: 1,
             pitch,
             accidental: accidental
                 .as_ref()
@@ -1062,6 +1195,27 @@ pub fn demo_image() -> GrayImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn part_label_ink_does_not_move_staff_left_edge() {
+        let mut image = demo_image();
+        for y in 127..138 {
+            for x in 10..30 {
+                image.put_pixel(x, y, Luma([0]));
+            }
+        }
+        let staves = detect_staves(&threshold(&image, 170, ThresholdType::Binary));
+        assert_eq!(staves.len(), 2);
+        assert_eq!(staves[0].left, 60.0);
+        assert_eq!(
+            crate::symbols::recognize_header(
+                &threshold(&image, 170, ThresholdType::Binary),
+                &staves[0]
+            )
+            .clef,
+            Clef::Treble
+        );
+    }
 
     #[test]
     fn short_secondary_beams_are_not_masked_by_open_head_candidates() {
@@ -1540,6 +1694,38 @@ mod tests {
     }
 
     #[test]
+    fn local_staff_projection_recovers_scan_rows_and_ignores_page_borders() {
+        let mut image = GrayImage::from_pixel(1200, 340, Luma([255]));
+        for y in 0..340 {
+            for x in 2..8 {
+                image.put_pixel(x, y, Luma([0]));
+            }
+        }
+        for x in 120..1080 {
+            let drift = (x - 120) / 160;
+            for line in 0..5 {
+                image.put_pixel(x, 40 + line * 14 + drift, Luma([0]));
+                image.put_pixel(x, 180 + line * 14, Luma([0]));
+            }
+        }
+        // Five short horizontal fragments are not another full staff.
+        for x in 450..540 {
+            for line in 0..5 {
+                image.put_pixel(x, 270 + line * 12, Luma([0]));
+            }
+        }
+        assert_eq!(staff_line_candidates(&image, 0, 1200, 0.45).len(), 1);
+        let staves = detect_staves(&image);
+        assert_eq!(staves.len(), 2);
+        assert!((staves[0].lines[0] - 43.0).abs() < 4.0);
+        assert_eq!(staves[1].lines[0], 180.0);
+        for staff in staves {
+            assert_eq!(staff.left, 120.0);
+            assert_eq!(staff.right, 1079.0);
+        }
+    }
+
+    #[test]
     fn straightens_slanted_staves_and_preserves_aligned_or_nonmusic_images() {
         let mut original = GrayImage::from_pixel(1000, 500, Luma([255]));
         for row in [90, 110, 130, 150, 170, 290, 310, 330, 350, 370] {
@@ -1568,8 +1754,11 @@ mod tests {
                     imageproc::geometric_transformations::Interpolation::Bilinear,
                     Luma([255]),
                 );
-                assert!(detect_staves(&threshold(&tilted, 170, ThresholdType::Binary)).is_empty());
-                let aligned = straighten(tilted);
+                let aligned = straighten(tilted.clone());
+                assert_ne!(
+                    aligned, tilted,
+                    "local staff proposals must not prevent deskewing"
+                );
                 assert_eq!(aligned.dimensions(), scaled.dimensions());
                 let score = recognize(&aligned);
                 assert_eq!(score.staves.len(), 2, "angle {angle}, scale {scale}");

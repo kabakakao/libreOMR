@@ -142,16 +142,20 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
         let first = &score.notes[start];
         let last = &score.notes[end];
         if span.kind == SpanKind::Tie
-            && ((first.pitch, first.accidental) != (last.pitch, last.accidental)
+            && (first.voice != last.voice
+                || (first.pitch, first.accidental) != (last.pitch, last.accidental)
                 || score.notes.iter().any(|note| {
                     note.staff == span.staff
+                        && note.voice == first.voice
                         && note.x > first.x + gap * 0.35
                         && note.x < last.x - gap * 0.35
                 })
-                || score
-                    .rests
-                    .iter()
-                    .any(|rest| rest.staff == span.staff && rest.x > first.x && rest.x < last.x))
+                || score.rests.iter().any(|rest| {
+                    rest.staff == span.staff
+                        && rest.voice == first.voice
+                        && rest.x > first.x
+                        && rest.x < last.x
+                }))
         {
             warnings.report(Issue::warning(
                 span.staff, Some(Object::Span(span_index)), Some(span.start[0]),
@@ -400,7 +404,15 @@ fn write_bar(xml: &mut Xml, kind: BarlineKind, left: bool, endings: &[&RepeatMar
     xml.end("barline");
 }
 
-fn write_note(xml: &mut Xml, note: &Note, chord: bool, marks: &[Mark], divisions: u128) {
+fn write_note(
+    xml: &mut Xml,
+    note: &Note,
+    chord: bool,
+    marks: &[Mark],
+    divisions: u128,
+    lyrics: &[&crate::model::Lyric],
+    polyphonic: bool,
+) {
     xml.start("note", &[]);
     if note.grace {
         xml.empty("grace", &[]);
@@ -427,6 +439,7 @@ fn write_note(xml: &mut Xml, note: &Note, chord: bool, marks: &[Mark], divisions
             xml.empty("tie", &[("type", phase)]);
         }
     }
+    xml.text("voice", note.voice);
     xml.start("type", if note.small { &[("size", "cue")] } else { &[] });
     xml.content(value(note.duration).1);
     xml.end("type");
@@ -448,6 +461,16 @@ fn write_note(xml: &mut Xml, note: &Note, chord: bool, marks: &[Mark], divisions
         xml.text("actual-notes", ratio.actual);
         xml.text("normal-notes", ratio.normal);
         xml.end("time-modification");
+    }
+    if polyphonic && note.duration != Duration::Whole {
+        xml.text(
+            "stem",
+            if note.voice.is_multiple_of(2) {
+                "down"
+            } else {
+                "up"
+            },
+        );
     }
     if note.articulation != Articulation::None
         || marks
@@ -502,10 +525,28 @@ fn write_note(xml: &mut Xml, note: &Note, chord: bool, marks: &[Mark], divisions
         }
         xml.end("notations");
     }
+    for lyric in lyrics {
+        let number = lyric.verse.to_string();
+        let mut attributes = vec![("number", number.as_str())];
+        if lyric.placement == crate::model::LyricPlacement::Above {
+            attributes.push(("placement", "above"));
+        }
+        xml.start("lyric", &attributes);
+        xml.text("syllabic", lyric.syllabic.xml());
+        let text = lyric.verse_label.as_ref().map_or_else(
+            || lyric.text.clone(),
+            |label| format!("{label} {}", lyric.text),
+        );
+        xml.text("text", &text);
+        if lyric.extend {
+            xml.empty("extend", &[]);
+        }
+        xml.end("lyric");
+    }
     xml.end("note");
 }
 
-/// Export pages as one continuous part, preserving page and staff order.
+/// Export pages in document order, preserving assigned parts and lyrics.
 pub fn export_pages(pages: &[&Score], title: &str) -> Result<Export, String> {
     let (combined, order, page_starts) = combine_pages(pages, false)?;
     export_ordered(&combined, title, order, &page_starts, false)
@@ -536,10 +577,36 @@ fn combine_pages(pages: &[&Score], inspection: bool) -> Result<CombinedPages, St
             ));
         }
         let offset = combined.staves.len();
+        let note_offset = combined.notes.len();
+        combined
+            .lyrics
+            .extend(page.lyrics.iter().cloned().map(|mut lyric| {
+                lyric.note += note_offset;
+                lyric
+            }));
+        combined
+            .staff_assignments
+            .extend(
+                page.staff_assignments
+                    .iter()
+                    .cloned()
+                    .map(|mut assignment| {
+                        assignment.staff += offset;
+                        assignment
+                    }),
+            );
         let mut staff_order: Vec<_> = (0..page.staves.len()).collect();
         staff_order.sort_by(|&a, &b| page.staves[a].lines[0].total_cmp(&page.staves[b].lines[0]));
         if let Some(first) = staff_order.first() {
             page_starts.insert(offset + first);
+        }
+        let mut seen_parts = std::collections::HashSet::new();
+        for staff in &staff_order {
+            if let Some(assignment) = page.staff_assignments.iter().find(|a| a.staff == *staff)
+                && seen_parts.insert(assignment.part)
+            {
+                page_starts.insert(offset + staff);
+            }
         }
         order.extend(staff_order.into_iter().map(|staff| offset + staff));
         combined.staves.extend(page.staves.iter().cloned());
@@ -628,6 +695,29 @@ pub(crate) fn inspect_pages(pages: &[&Score]) -> Vec<Issue> {
         }
     }
     for (page, score) in valid {
+        for lyric in score
+            .lyrics
+            .iter()
+            .filter(|l| !l.confirmed || l.text.trim().is_empty())
+        {
+            let note = &score.notes[lyric.note];
+            let mut issue = Issue::warning(
+                note.staff,
+                Some(Object::Note(lyric.note)),
+                Some(note.x),
+                crate::i18n::tr("Lyrics need review."),
+                crate::i18n::tr(
+                    "Compare the syllable and verse with the scan in the Lyrics editor.",
+                ),
+            );
+            issue.page = page;
+            issue.severity = if lyric.text.trim().is_empty() {
+                Severity::Warning
+            } else {
+                Severity::Review
+            };
+            issues.push(issue);
+        }
         macro_rules! review {
             ($field:ident, $variant:ident, $position:expr, $label:expr) => {
                 for (index, object) in score.$field.iter().enumerate().filter(|(_, object)| !object.confirmed) {
@@ -745,13 +835,30 @@ fn export_ordered(
     xml.text("software", "libreOMR");
     xml.end("encoding");
     xml.end("identification");
+    let mut parts: std::collections::BTreeMap<usize, (String, Vec<usize>)> = Default::default();
+    for staff in staff_order {
+        let assignment = score.staff_assignments.iter().find(|a| a.staff == staff);
+        let part = assignment.map_or(0, |a| a.part);
+        let entry = parts.entry(part).or_insert_with(|| {
+            (
+                assignment.map_or_else(String::new, |a| a.name.clone()),
+                Vec::new(),
+            )
+        });
+        entry.1.push(staff);
+    }
     xml.start("part-list", &[]);
-    xml.start("score-part", &[("id", "P1")]);
-    xml.empty("part-name", &[("print-object", "no")]);
-    xml.empty("part-name-display", &[("print-object", "no")]);
-    xml.end("score-part");
+    for (index, (name, _)) in parts.values().enumerate() {
+        xml.start("score-part", &[("id", &format!("P{}", index + 1))]);
+        if name.is_empty() {
+            xml.empty("part-name", &[("print-object", "no")]);
+            xml.empty("part-name-display", &[("print-object", "no")]);
+        } else {
+            xml.text("part-name", name);
+        }
+        xml.end("score-part");
+    }
     xml.end("part-list");
-    xml.start("part", &[("id", "P1")]);
     let mut warnings = Warnings::default();
     let marks = span_marks(score, &mut warnings);
     let unchecked = score.notes.iter().filter(|note| !note.confirmed).count()
@@ -777,457 +884,518 @@ fn export_ordered(
             .repeat_marks
             .iter()
             .filter(|mark| !mark.confirmed)
-            .count();
+            .count()
+        + score.lyrics.iter().filter(|lyric| !lyric.confirmed).count();
     if unchecked > 0 {
         warnings.messages.push(crate::i18n::format(
             "{unchecked} unreviewed objects will also be exported.",
             &[("unchecked", format!("{}", unchecked))],
         ));
     }
-    let mut number = 1_u32;
-    let mut meter = TimeSignature::Common;
-    let mut courtesy_meter = false;
-    let mut first = true;
-    let mut next_left = None;
-    let mut next_left_source = None;
-    let mut clef = None;
-    let mut new_page = false;
-    for staff_index in staff_order {
-        new_page |= page_starts.contains(&staff_index);
-        let staff = &score.staves[staff_index];
-        let mut items: Vec<_> = score
-            .notes
-            .iter()
-            .enumerate()
-            .filter(|(_, note)| note.staff == staff_index)
-            .map(|(index, note)| (note.x, Item::Note(index)))
-            .chain(
-                score
-                    .rests
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, rest)| rest.staff == staff_index)
-                    .map(|(index, rest)| (rest.x, Item::Rest(index))),
-            )
-            .chain(
-                score
-                    .key_changes
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, change)| change.staff == staff_index)
-                    .map(|(index, change)| (change.x, Item::Key(index))),
-            )
-            .chain(
-                score
-                    .time_changes
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, change)| change.staff == staff_index)
-                    .map(|(index, change)| (change.x, Item::Time(index))),
-            )
-            .chain(
-                score
-                    .dynamics
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, dynamic)| dynamic.staff == staff_index)
-                    .map(|(index, dynamic)| {
-                        let x = score
-                            .notes
-                            .iter()
-                            .filter(|note| note.staff == staff_index)
-                            .map(|note| note.x)
-                            .chain(
-                                score
-                                    .rests
-                                    .iter()
-                                    .filter(|rest| rest.staff == staff_index)
-                                    .map(|rest| rest.x),
-                            )
-                            .filter(|x| {
-                                (*x - dynamic.x).abs() <= staff.spacing() * 2.0
-                                    && !score.barlines.iter().any(|bar| {
-                                        bar.staff == staff_index
-                                            && bar.x > dynamic.x.min(*x)
-                                            && bar.x <= dynamic.x.max(*x)
-                                    })
-                            })
-                            .min_by(|a, b| {
-                                (*a - dynamic.x).abs().total_cmp(&(*b - dynamic.x).abs())
-                            })
-                            .unwrap_or(dynamic.x);
-                        (x, Item::Dynamic(index))
-                    }),
-            )
-            .chain(
-                score
-                    .repeat_marks
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, mark)| {
-                        mark.staff == staff_index && mark.kind != RepeatMarkKind::Ending
-                    })
-                    .map(|(index, mark)| {
-                        let x = score
-                            .notes
-                            .iter()
-                            .filter(|note| note.staff == staff_index)
-                            .map(|note| note.x)
-                            .chain(
-                                score
-                                    .rests
-                                    .iter()
-                                    .filter(|rest| rest.staff == staff_index)
-                                    .map(|rest| rest.x),
-                            )
-                            .filter(|x| {
-                                (*x - mark.x).abs() <= staff.spacing() * 2.0
-                                    && !score.barlines.iter().any(|bar| {
-                                        bar.staff == staff_index
-                                            && bar.x > mark.x.min(*x)
-                                            && bar.x <= mark.x.max(*x)
-                                    })
-                            })
-                            .min_by(|a, b| (*a - mark.x).abs().total_cmp(&(*b - mark.x).abs()))
-                            .unwrap_or(mark.x);
-                        (x, Item::RepeatMark(index))
-                    }),
-            )
-            .collect();
-        let priority = |item| match item {
-            Item::Key(_) | Item::Time(_) => 0,
-            Item::Dynamic(_) | Item::RepeatMark(_) => 1,
-            _ => 2,
-        };
-        items.sort_by(|a, b| a.0.total_cmp(&b.0).then(priority(a.1).cmp(&priority(b.1))));
-        let mut bars: Vec<_> = score
-            .barlines
-            .iter()
-            .filter(|bar| bar.staff == staff_index)
-            .collect();
-        bars.sort_by(|first, second| first.x.total_cmp(&second.x));
-        let wedges = wedge_endpoints(score, staff_index, &items, &bars, &mut warnings);
-        if first && staff.header.time_signature.is_none() {
-            warnings.report(Issue::warning(
+    for (part_index, (_, staff_order)) in parts.values().enumerate() {
+        xml.start("part", &[("id", &format!("P{}", part_index + 1))]);
+        let mut number = 1_u32;
+        let mut meter = TimeSignature::Common;
+        let mut courtesy_meter = false;
+        let mut first = true;
+        let mut next_left = None;
+        let mut next_left_source = None;
+        let mut clef = None;
+        let mut new_page = false;
+        for &staff_index in staff_order {
+            new_page |= page_starts.contains(&staff_index);
+            let staff = &score.staves[staff_index];
+            let mut items: Vec<_> = score
+                .notes
+                .iter()
+                .enumerate()
+                .filter(|(_, note)| note.staff == staff_index)
+                .map(|(index, note)| (note.x, Item::Note(index)))
+                .chain(
+                    score
+                        .rests
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, rest)| rest.staff == staff_index)
+                        .map(|(index, rest)| (rest.x, Item::Rest(index))),
+                )
+                .chain(
+                    score
+                        .key_changes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, change)| change.staff == staff_index)
+                        .map(|(index, change)| (change.x, Item::Key(index))),
+                )
+                .chain(
+                    score
+                        .time_changes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, change)| change.staff == staff_index)
+                        .map(|(index, change)| (change.x, Item::Time(index))),
+                )
+                .chain(
+                    score
+                        .dynamics
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, dynamic)| dynamic.staff == staff_index)
+                        .map(|(index, dynamic)| {
+                            let x = score
+                                .notes
+                                .iter()
+                                .filter(|note| note.staff == staff_index)
+                                .map(|note| note.x)
+                                .chain(
+                                    score
+                                        .rests
+                                        .iter()
+                                        .filter(|rest| rest.staff == staff_index)
+                                        .map(|rest| rest.x),
+                                )
+                                .filter(|x| {
+                                    (*x - dynamic.x).abs() <= staff.spacing() * 2.0
+                                        && !score.barlines.iter().any(|bar| {
+                                            bar.staff == staff_index
+                                                && bar.x > dynamic.x.min(*x)
+                                                && bar.x <= dynamic.x.max(*x)
+                                        })
+                                })
+                                .min_by(|a, b| {
+                                    (*a - dynamic.x).abs().total_cmp(&(*b - dynamic.x).abs())
+                                })
+                                .unwrap_or(dynamic.x);
+                            (x, Item::Dynamic(index))
+                        }),
+                )
+                .chain(
+                    score
+                        .repeat_marks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, mark)| {
+                            mark.staff == staff_index && mark.kind != RepeatMarkKind::Ending
+                        })
+                        .map(|(index, mark)| {
+                            let x = score
+                                .notes
+                                .iter()
+                                .filter(|note| note.staff == staff_index)
+                                .map(|note| note.x)
+                                .chain(
+                                    score
+                                        .rests
+                                        .iter()
+                                        .filter(|rest| rest.staff == staff_index)
+                                        .map(|rest| rest.x),
+                                )
+                                .filter(|x| {
+                                    (*x - mark.x).abs() <= staff.spacing() * 2.0
+                                        && !score.barlines.iter().any(|bar| {
+                                            bar.staff == staff_index
+                                                && bar.x > mark.x.min(*x)
+                                                && bar.x <= mark.x.max(*x)
+                                        })
+                                })
+                                .min_by(|a, b| (*a - mark.x).abs().total_cmp(&(*b - mark.x).abs()))
+                                .unwrap_or(mark.x);
+                            (x, Item::RepeatMark(index))
+                        }),
+                )
+                .collect();
+            let priority = |item| match item {
+                Item::Key(_) | Item::Time(_) => 0,
+                Item::Dynamic(_) | Item::RepeatMark(_) => 1,
+                _ => 2,
+            };
+            items.sort_by(|a, b| a.0.total_cmp(&b.0).then(priority(a.1).cmp(&priority(b.1))));
+            let mut bars: Vec<_> = score
+                .barlines
+                .iter()
+                .filter(|bar| bar.staff == staff_index)
+                .collect();
+            bars.sort_by(|first, second| first.x.total_cmp(&second.x));
+            let wedges = wedge_endpoints(score, staff_index, &items, &bars, &mut warnings);
+            if first && staff.header.time_signature.is_none() {
+                warnings.report(Issue::warning(
                 staff_index,
                 None,
                 Some(staff.left),
                 crate::i18n::tr("No initial time signature: assuming 4/4."),
                 crate::i18n::tr("Set the initial time signature under Staff information; check note values and time changes."),
             ));
-        }
-        if first && staff.header.key_signature.is_none() {
-            warnings.report(Issue::warning(staff_index, None, Some(staff.left),
+            }
+            if first && staff.header.key_signature.is_none() {
+                warnings.report(Issue::warning(staff_index, None, Some(staff.left),
                 crate::i18n::tr("No initial key signature recognized; stored pitches are exported unchanged."),
                 crate::i18n::tr("Set the key signature under Staff information, explicitly including C major / A minor.")));
-        }
-        if staff.header.clef == Clef::Unknown {
-            warnings.report(Issue::warning(
-                staff_index,
-                None,
-                Some(staff.left),
-                crate::i18n::format(
-                    "Unknown clef, {0}.",
-                    &[(
-                        "0",
-                        (if clef.is_some() {
-                            crate::i18n::tr("keeping previous clef")
-                        } else {
-                            crate::i18n::tr("assuming treble")
-                        })
-                        .to_string(),
-                    )],
-                ),
-                crate::i18n::tr(
-                    "Set the clef under Staff information and check the resulting pitches.",
-                ),
-            ));
-        }
-        if let Some(time) = staff.header.time_signature {
-            meter = time;
-        }
-        let mut ending_starts: Vec<(f32, &RepeatMark)> = vec![];
-        let mut ending_stops: Vec<(f32, &RepeatMark)> = vec![];
-        for (mark_index, mark) in
-            score.repeat_marks.iter().enumerate().filter(|(_, mark)| {
+            }
+            if staff.header.clef == Clef::Unknown {
+                warnings.report(Issue::warning(
+                    staff_index,
+                    None,
+                    Some(staff.left),
+                    crate::i18n::format(
+                        "Unknown clef, {0}.",
+                        &[(
+                            "0",
+                            (if clef.is_some() {
+                                crate::i18n::tr("keeping previous clef")
+                            } else {
+                                crate::i18n::tr("assuming treble")
+                            })
+                            .to_string(),
+                        )],
+                    ),
+                    crate::i18n::tr(
+                        "Set the clef under Staff information and check the resulting pitches.",
+                    ),
+                ));
+            }
+            if let Some(time) = staff.header.time_signature {
+                meter = time;
+            }
+            let mut ending_starts: Vec<(f32, &RepeatMark)> = vec![];
+            let mut ending_stops: Vec<(f32, &RepeatMark)> = vec![];
+            for (mark_index, mark) in score.repeat_marks.iter().enumerate().filter(|(_, mark)| {
                 mark.staff == staff_index && mark.kind == RepeatMarkKind::Ending
-            })
-        {
-            let nearest = |x: f32| {
-                bars.iter()
-                    .map(|bar| bar.x)
-                    .chain([staff.left, staff.right])
-                    .min_by(|a, b| (*a - x).abs().total_cmp(&(*b - x).abs()))
-                    .unwrap()
-            };
-            let start = nearest(mark.x);
-            let stop = nearest(mark.end_x);
-            if mark.numbers.is_empty()
-                || (start - mark.x).abs() > staff.spacing() * 2.0
-                || (stop - mark.end_x).abs() > staff.spacing() * 2.0
-                || start >= stop
-            {
-                warnings.report(Issue::warning(staff_index, Some(Object::RepeatMark(mark_index)), Some(mark.x),
+            }) {
+                let nearest = |x: f32| {
+                    bars.iter()
+                        .map(|bar| bar.x)
+                        .chain([staff.left, staff.right])
+                        .min_by(|a, b| (*a - x).abs().total_cmp(&(*b - x).abs()))
+                        .unwrap()
+                };
+                let start = nearest(mark.x);
+                let stop = nearest(mark.end_x);
+                if mark.numbers.is_empty()
+                    || (start - mark.x).abs() > staff.spacing() * 2.0
+                    || (stop - mark.end_x).abs() > staff.spacing() * 2.0
+                    || start >= stop
+                {
+                    warnings.report(Issue::warning(staff_index, Some(Object::RepeatMark(mark_index)), Some(mark.x),
                     crate::i18n::tr("Volta bracket without reliable number/measure boundaries; omitted."),
                     crate::i18n::tr("Enter ending numbers and place start/end at measure boundaries (tolerance: two line spacings).")));
-                continue;
-            }
-            ending_starts.push((start, mark));
-            ending_stops.push((stop, mark));
-        }
-        let mut segment_left = staff.left;
-        let mut cursor = 0;
-        let mut first_in_staff = true;
-        for (segment_index, boundary) in bars
-            .into_iter()
-            .map(Some)
-            .chain(std::iter::once(None))
-            .enumerate()
-        {
-            let end = boundary.map_or(items.len(), |bar| {
-                items.partition_point(|item| item.0 < bar.x)
-            });
-            let segment_right = boundary.map_or(staff.right, |bar| bar.x);
-            let left_endings: Vec<_> = ending_starts
-                .iter()
-                .filter(|(x, _)| *x == segment_left)
-                .map(|(_, mark)| *mark)
-                .collect();
-            let right_endings: Vec<_> = ending_stops
-                .iter()
-                .filter(|(x, _)| *x == segment_right)
-                .map(|(_, mark)| *mark)
-                .collect();
-            let measure_left = segment_left;
-            segment_left = segment_right;
-            if cursor == end {
-                if let Some(bar) = boundary
-                    && matches!(bar.kind, BarlineKind::RepeatStart | BarlineKind::RepeatBoth)
-                {
-                    next_left = Some(BarlineKind::RepeatStart);
-                    next_left_source = score
-                        .barlines
-                        .iter()
-                        .position(|candidate| std::ptr::eq(candidate, bar));
+                    continue;
                 }
-                continue;
+                ending_starts.push((start, mark));
+                ending_stops.push((stop, mark));
             }
-            let segment = &items[cursor..end];
-            cursor = end;
-            if boundary.is_none()
-                && segment
-                    .iter()
-                    .all(|(_, item)| matches!(item, Item::Time(_)))
+            let mut segment_left = staff.left;
+            let mut cursor = 0;
+            let mut first_in_staff = true;
+            for (segment_index, boundary) in bars
+                .into_iter()
+                .map(Some)
+                .chain(std::iter::once(None))
+                .enumerate()
             {
-                // A meter printed after the last bar announces the next row;
-                // it must not create a measure containing only attributes.
-                for (_, item) in segment {
-                    if let Item::Time(index) = *item {
-                        meter = score.time_changes[index].time_signature;
-                    }
-                }
-                courtesy_meter = true;
-                continue;
-            }
-            let multirests: Vec<_> = segment
-                .iter()
-                .filter_map(|(_, item)| match item {
-                    Item::Rest(index) => score.rests[*index].measures,
-                    _ => None,
-                })
-                .collect();
-            if !multirests.is_empty()
-                && (multirests.len() != 1
-                    || segment
-                        .iter()
-                        .filter(|(_, item)| {
-                            !matches!(item, Item::Note(index) if score.notes[*index].grace)
-                                && !matches!(
-                                    item,
-                                    Item::Key(_)
-                                        | Item::Time(_)
-                                        | Item::Dynamic(_)
-                                        | Item::RepeatMark(_)
-                                )
-                        })
-                        .count()
-                        != 1)
-            {
-                let message = crate::i18n::format(
-                    "Staff {0}: Multimeasure rest and other notes/rests in the same measure. Please correct barlines.",
-                    &[("0", format!("{}", staff_index + 1))],
-                );
-                if !inspection {
-                    return Err(message);
-                }
-                let rest = segment.iter().find_map(|(_, item)| match item {
-                    Item::Rest(index) if score.rests[*index].measures.is_some() => Some(*index),
-                    _ => None,
+                let end = boundary.map_or(items.len(), |bar| {
+                    items.partition_point(|item| item.0 < bar.x)
                 });
-                let mut issue = Issue::warning(
-                    staff_index,
-                    rest.map(Object::Rest),
-                    Some(measure_left),
-                    crate::i18n::tr(
-                        "Multimeasure rest and other notes/rests in the same measure; export blocked.",
-                    ),
-                    crate::i18n::tr(
-                        "Correct measure boundaries or delete incorrectly recognized notes/rests. A multimeasure rest must be alone in its measure.",
-                    ),
-                );
-                issue.severity = Severity::Error;
-                issue.measure = Some(number);
-                warnings.report(issue);
-            }
-            let count = multirests.first().copied().unwrap_or(1);
-            for repetition in 0..count {
-                let (beats, beat_unit) = meter_value(meter);
-                let mut measure_duration =
-                    divisions * 4 * u128::from(beats) / u128::from(beat_unit);
-                xml.start("measure", &[("number", &number.to_string())]);
-                if first_in_staff && !first {
-                    xml.empty(
-                        "print",
-                        &[(if new_page { "new-page" } else { "new-system" }, "yes")],
+                let segment_right = boundary.map_or(staff.right, |bar| bar.x);
+                let left_endings: Vec<_> = ending_starts
+                    .iter()
+                    .filter(|(x, _)| *x == segment_left)
+                    .map(|(_, mark)| *mark)
+                    .collect();
+                let right_endings: Vec<_> = ending_stops
+                    .iter()
+                    .filter(|(x, _)| *x == segment_right)
+                    .map(|(_, mark)| *mark)
+                    .collect();
+                let measure_left = segment_left;
+                segment_left = segment_right;
+                if cursor == end {
+                    if let Some(bar) = boundary
+                        && matches!(bar.kind, BarlineKind::RepeatStart | BarlineKind::RepeatBoth)
+                    {
+                        next_left = Some(BarlineKind::RepeatStart);
+                        next_left_source = score
+                            .barlines
+                            .iter()
+                            .position(|candidate| std::ptr::eq(candidate, bar));
+                    }
+                    continue;
+                }
+                let segment = &items[cursor..end];
+                cursor = end;
+                if boundary.is_none()
+                    && segment
+                        .iter()
+                        .all(|(_, item)| matches!(item, Item::Time(_)))
+                {
+                    // A meter printed after the last bar announces the next row;
+                    // it must not create a measure containing only attributes.
+                    for (_, item) in segment {
+                        if let Item::Time(index) = *item {
+                            meter = score.time_changes[index].time_signature;
+                        }
+                    }
+                    courtesy_meter = true;
+                    continue;
+                }
+                let multirests: Vec<_> = segment
+                    .iter()
+                    .filter_map(|(_, item)| match item {
+                        Item::Rest(index) => score.rests[*index].measures,
+                        _ => None,
+                    })
+                    .collect();
+                if !multirests.is_empty()
+                    && (multirests.len() != 1
+                        || segment
+                            .iter()
+                            .filter(|(_, item)| {
+                                !matches!(item, Item::Note(index) if score.notes[*index].grace)
+                                    && !matches!(
+                                        item,
+                                        Item::Key(_)
+                                            | Item::Time(_)
+                                            | Item::Dynamic(_)
+                                            | Item::RepeatMark(_)
+                                    )
+                            })
+                            .count()
+                            != 1)
+                {
+                    let message = crate::i18n::format(
+                        "Staff {0}: Multimeasure rest and other notes/rests in the same measure. Please correct barlines.",
+                        &[("0", format!("{}", staff_index + 1))],
                     );
+                    if !inspection {
+                        return Err(message);
+                    }
+                    let rest = segment.iter().find_map(|(_, item)| match item {
+                        Item::Rest(index) if score.rests[*index].measures.is_some() => Some(*index),
+                        _ => None,
+                    });
+                    let mut issue = Issue::warning(
+                        staff_index,
+                        rest.map(Object::Rest),
+                        Some(measure_left),
+                        crate::i18n::tr(
+                            "Multimeasure rest and other notes/rests in the same measure; export blocked.",
+                        ),
+                        crate::i18n::tr(
+                            "Correct measure boundaries or delete incorrectly recognized notes/rests. A multimeasure rest must be alone in its measure.",
+                        ),
+                    );
+                    issue.severity = Severity::Error;
+                    issue.measure = Some(number);
+                    warnings.report(issue);
                 }
-                new_page = false;
-                if first_in_staff || (count > 1 && repetition == 0) {
-                    xml.start("attributes", &[]);
-                    if first {
-                        xml.text("divisions", divisions);
+                let count = multirests.first().copied().unwrap_or(1);
+                for repetition in 0..count {
+                    let (beats, beat_unit) = meter_value(meter);
+                    let mut measure_duration =
+                        divisions * 4 * u128::from(beats) / u128::from(beat_unit);
+                    xml.start("measure", &[("number", &number.to_string())]);
+                    if first_in_staff && !first {
+                        xml.empty(
+                            "print",
+                            &[(if new_page { "new-page" } else { "new-system" }, "yes")],
+                        );
                     }
-                    if first_in_staff {
-                        if let Some(key) = staff.header.key_signature {
-                            write_key(&mut xml, key.fifths);
+                    new_page = false;
+                    if first_in_staff || (count > 1 && repetition == 0) {
+                        xml.start("attributes", &[]);
+                        if first {
+                            xml.text("divisions", divisions);
                         }
-                        if first || staff.header.time_signature.is_some() || courtesy_meter {
-                            write_time(&mut xml, meter);
-                            courtesy_meter = false;
-                        }
-                        let current_clef = match staff.header.clef {
-                            Clef::Unknown => clef.unwrap_or(Clef::Treble),
-                            known => known,
-                        };
-                        if clef != Some(current_clef) {
-                            xml.start("clef", &[]);
-                            xml.text("sign", if current_clef == Clef::Bass { "F" } else { "G" });
-                            xml.text("line", if current_clef == Clef::Bass { 4 } else { 2 });
-                            xml.end("clef");
-                            clef = Some(current_clef);
-                        }
-                    }
-                    if count > 1 {
-                        xml.start("measure-style", &[]);
-                        xml.text("multiple-rest", count);
-                        xml.end("measure-style");
-                    }
-                    xml.end("attributes");
-                }
-                if repetition == 0 {
-                    if let Some(kind) = next_left.take() {
-                        write_bar(&mut xml, kind, true, &left_endings);
-                    } else if !left_endings.is_empty() {
-                        write_bar(&mut xml, BarlineKind::Single, true, &left_endings);
-                    }
-                }
-                let mut elapsed = 0;
-                let mut onsets = vec![];
-                let mut previous_note: Option<&Note> = None;
-                for (position, item) in segment {
-                    match *item {
-                        Item::RepeatMark(index) => {
-                            if repetition == 0 {
-                                let mark = &score.repeat_marks[index];
-                                xml.start("direction", &[("placement", "above")]);
-                                // MuseScore carries words formatting into the following symbol,
-                                // but ignores font-size on segno/coda themselves.
-                                xml.start("direction-type", &[]);
-                                xml.empty("words", &[("font-size", "24")]);
-                                xml.end("direction-type");
-                                xml.start("direction-type", &[]);
-                                xml.empty(
-                                    if mark.kind == RepeatMarkKind::Segno {
-                                        "segno"
-                                    } else {
-                                        "coda"
-                                    },
-                                    &[("font-size", "24")],
-                                );
-                                xml.end("direction-type");
-                                xml.end("direction");
+                        if first_in_staff {
+                            if let Some(key) = staff.header.key_signature {
+                                write_key(&mut xml, key.fifths);
                             }
-                        }
-                        Item::Dynamic(index) => {
-                            if repetition == 0 {
-                                let dynamic = &score.dynamics[index];
-                                xml.start(
-                                    "direction",
-                                    &[(
-                                        "placement",
-                                        if dynamic.y < staff.lines[2] {
-                                            "above"
-                                        } else {
-                                            "below"
-                                        },
-                                    )],
-                                );
-                                xml.start("direction-type", &[]);
-                                xml.start("dynamics", &[]);
-                                if matches!(dynamic.kind.label(), "sfzp") {
-                                    xml.text("other-dynamics", dynamic.kind.label());
-                                } else {
-                                    xml.empty(dynamic.kind.label(), &[]);
-                                }
-                                xml.end("dynamics");
-                                xml.end("direction-type");
-                                xml.end("direction");
-                            }
-                        }
-                        Item::Time(index) => {
-                            if repetition == 0 {
-                                meter = score.time_changes[index].time_signature;
-                                let (beats, beat_unit) = meter_value(meter);
-                                measure_duration =
-                                    divisions * 4 * u128::from(beats) / u128::from(beat_unit);
-                                xml.start("attributes", &[]);
+                            if first || staff.header.time_signature.is_some() || courtesy_meter {
                                 write_time(&mut xml, meter);
-                                xml.end("attributes");
-                                previous_note = None;
+                                courtesy_meter = false;
                             }
-                        }
-                        Item::Key(index) => {
-                            if repetition == 0 {
-                                xml.start("attributes", &[]);
-                                write_key(&mut xml, score.key_changes[index].key_signature.fifths);
-                                xml.end("attributes");
-                            }
-                        }
-                        Item::Note(index) => {
-                            let note = &score.notes[index];
-                            let chord = previous_note.is_some_and(|previous| {
-                                note.grace == previous.grace
-                                    && (*position - previous.x).abs() <= staff.spacing() * 0.35
-                                    && note_duration(previous, divisions)
-                                        == note_duration(note, divisions)
-                            });
-                            if !chord && !note.grace {
-                                onsets.push((*position, elapsed));
-                            }
-                            write_note(&mut xml, note, chord, &marks[index], divisions);
-                            if !chord {
-                                elapsed += note_duration(note, divisions);
-                                if !note.grace {
-                                    previous_note = Some(note);
+                            let current_clef = match staff.header.clef {
+                                Clef::Unknown => clef.unwrap_or(Clef::Treble),
+                                known => known,
+                            };
+                            if clef != Some(current_clef) {
+                                xml.start("clef", &[]);
+                                xml.text(
+                                    "sign",
+                                    if current_clef == Clef::Bass { "F" } else { "G" },
+                                );
+                                xml.text("line", if current_clef == Clef::Bass { 4 } else { 2 });
+                                if current_clef == Clef::Treble8vb {
+                                    xml.text("clef-octave-change", -1);
                                 }
+                                xml.end("clef");
+                                clef = Some(current_clef);
                             }
                         }
-                        Item::Rest(index) => {
-                            let rest = &score.rests[index];
-                            let full_measure = rest.measures.is_some()
+                        if count > 1 {
+                            xml.start("measure-style", &[]);
+                            xml.text("multiple-rest", count);
+                            xml.end("measure-style");
+                        }
+                        xml.end("attributes");
+                    }
+                    if repetition == 0 {
+                        if let Some(kind) = next_left.take() {
+                            write_bar(&mut xml, kind, true, &left_endings);
+                        } else if !left_endings.is_empty() {
+                            write_bar(&mut xml, BarlineKind::Single, true, &left_endings);
+                        }
+                    }
+                    let mut voices: Vec<_> = segment
+                        .iter()
+                        .filter_map(|(_, item)| match *item {
+                            Item::Note(i) => Some(score.notes[i].voice),
+                            Item::Rest(i) => Some(score.rests[i].voice),
+                            _ => None,
+                        })
+                        .collect();
+                    voices.sort_unstable();
+                    voices.dedup();
+                    if voices.is_empty() {
+                        voices.push(1);
+                    }
+                    let polyphonic = voices.len() > 1;
+                    let mut previous_elapsed = 0;
+                    for (voice_index, voice) in voices.into_iter().enumerate() {
+                        if previous_elapsed > 0 {
+                            xml.start("backup", &[]);
+                            xml.text("duration", previous_elapsed);
+                            xml.end("backup");
+                        }
+                        let voice_segment: Vec<_> = segment
+                            .iter()
+                            .copied()
+                            .filter(|(_, item)| match *item {
+                                Item::Note(i) => score.notes[i].voice == voice,
+                                Item::Rest(i) => score.rests[i].voice == voice,
+                                _ => voice_index == 0,
+                            })
+                            .collect();
+                        let mut elapsed = 0;
+                        let mut onsets = vec![];
+                        let mut previous_note: Option<&Note> = None;
+                        for (position, item) in &voice_segment {
+                            match *item {
+                                Item::RepeatMark(index) => {
+                                    if repetition == 0 {
+                                        let mark = &score.repeat_marks[index];
+                                        xml.start("direction", &[("placement", "above")]);
+                                        // MuseScore carries words formatting into the following symbol,
+                                        // but ignores font-size on segno/coda themselves.
+                                        xml.start("direction-type", &[]);
+                                        xml.empty("words", &[("font-size", "24")]);
+                                        xml.end("direction-type");
+                                        xml.start("direction-type", &[]);
+                                        xml.empty(
+                                            if mark.kind == RepeatMarkKind::Segno {
+                                                "segno"
+                                            } else {
+                                                "coda"
+                                            },
+                                            &[("font-size", "24")],
+                                        );
+                                        xml.end("direction-type");
+                                        xml.end("direction");
+                                    }
+                                }
+                                Item::Dynamic(index) => {
+                                    if repetition == 0 {
+                                        let dynamic = &score.dynamics[index];
+                                        xml.start(
+                                            "direction",
+                                            &[(
+                                                "placement",
+                                                if dynamic.y < staff.lines[2] {
+                                                    "above"
+                                                } else {
+                                                    "below"
+                                                },
+                                            )],
+                                        );
+                                        xml.start("direction-type", &[]);
+                                        xml.start("dynamics", &[]);
+                                        if matches!(dynamic.kind.label(), "sfzp") {
+                                            xml.text("other-dynamics", dynamic.kind.label());
+                                        } else {
+                                            xml.empty(dynamic.kind.label(), &[]);
+                                        }
+                                        xml.end("dynamics");
+                                        xml.end("direction-type");
+                                        xml.end("direction");
+                                    }
+                                }
+                                Item::Time(index) => {
+                                    if repetition == 0 {
+                                        meter = score.time_changes[index].time_signature;
+                                        let (beats, beat_unit) = meter_value(meter);
+                                        measure_duration = divisions * 4 * u128::from(beats)
+                                            / u128::from(beat_unit);
+                                        xml.start("attributes", &[]);
+                                        write_time(&mut xml, meter);
+                                        xml.end("attributes");
+                                        previous_note = None;
+                                    }
+                                }
+                                Item::Key(index) => {
+                                    if repetition == 0 {
+                                        xml.start("attributes", &[]);
+                                        write_key(
+                                            &mut xml,
+                                            score.key_changes[index].key_signature.fifths,
+                                        );
+                                        xml.end("attributes");
+                                    }
+                                }
+                                Item::Note(index) => {
+                                    let note = &score.notes[index];
+                                    let chord = previous_note.is_some_and(|previous| {
+                                        note.grace == previous.grace
+                                            && (*position - previous.x).abs()
+                                                <= staff.spacing() * 0.35
+                                            && note_duration(previous, divisions)
+                                                == note_duration(note, divisions)
+                                    });
+                                    if !chord && !note.grace {
+                                        onsets.push((*position, elapsed));
+                                    }
+                                    let lyrics: Vec<_> = score
+                                        .lyrics
+                                        .iter()
+                                        .filter(|lyric| lyric.note == index)
+                                        .collect();
+                                    write_note(
+                                        &mut xml,
+                                        note,
+                                        chord,
+                                        &marks[index],
+                                        divisions,
+                                        &lyrics,
+                                        score
+                                            .notes
+                                            .iter()
+                                            .any(|n| n.staff == staff_index && n.voice > 1)
+                                            || score
+                                                .rests
+                                                .iter()
+                                                .any(|r| r.staff == staff_index && r.voice > 1),
+                                    );
+                                    if !chord {
+                                        elapsed += note_duration(note, divisions);
+                                        if !note.grace {
+                                            previous_note = Some(note);
+                                        }
+                                    }
+                                }
+                                Item::Rest(index) => {
+                                    let rest = &score.rests[index];
+                                    let full_measure = rest.measures.is_some()
                                 || (rest.duration == Duration::Whole
                                     && rest.dots == 0
-                                    && segment
+                                    && voice_segment
                                         .iter()
                                         .filter(|(_, item)| {
                                             !matches!(item, Item::Note(index) if score.notes[*index].grace) && !matches!(
@@ -1240,135 +1408,155 @@ fn export_ordered(
                                         })
                                         .count()
                                         == 1);
-                            let duration = if full_measure {
-                                measure_duration
-                            } else {
-                                rest.ticks(divisions)
-                            };
-                            onsets.push((*position, elapsed));
-                            xml.start("note", &[]);
-                            xml.empty(
-                                "rest",
-                                if full_measure {
-                                    &[("measure", "yes")]
-                                } else {
-                                    &[]
-                                },
-                            );
-                            xml.text("duration", duration);
-                            if !full_measure {
-                                xml.text("type", value(rest.duration).1);
-                                for _ in 0..rest.dots {
-                                    xml.empty("dot", &[]);
+                                    let duration = if full_measure {
+                                        measure_duration
+                                    } else {
+                                        rest.ticks(divisions)
+                                    };
+                                    onsets.push((*position, elapsed));
+                                    xml.start("note", &[]);
+                                    xml.empty(
+                                        "rest",
+                                        if full_measure {
+                                            &[("measure", "yes")]
+                                        } else {
+                                            &[]
+                                        },
+                                    );
+                                    xml.text("duration", duration);
+                                    xml.text("voice", rest.voice);
+                                    if !full_measure {
+                                        xml.text("type", value(rest.duration).1);
+                                        for _ in 0..rest.dots {
+                                            xml.empty("dot", &[]);
+                                        }
+                                    }
+                                    xml.end("note");
+                                    elapsed += duration;
+                                    previous_note = None;
                                 }
                             }
-                            xml.end("note");
-                            elapsed += duration;
-                            previous_note = None;
                         }
-                    }
-                }
-                for endpoint in &wedges[segment_index] {
-                    let time = if count > 1 {
-                        // A multi-measure rest represents the entire printed interval.
-                        let total = measure_duration * u128::from(count);
-                        let time =
-                            interpolate_time(endpoint.x, (measure_left, 0), (segment_right, total));
-                        let target = (time / measure_duration).min(u128::from(count - 1));
-                        if target != u128::from(repetition) {
-                            continue;
-                        }
-                        time - u128::from(repetition) * measure_duration
-                    } else {
-                        wedge_time(endpoint.x, &onsets, segment_right, elapsed)
-                    };
-                    write_wedge(&mut xml, &endpoint.mark, time as i128 - elapsed as i128);
-                }
-                if elapsed != measure_duration {
-                    let mut issue = Issue::warning(
-                        staff_index,
-                        None,
-                        Some(measure_left),
-                        crate::i18n::format(
-                            "Measure {number}: duration {0} instead of {1} ({2}); check note values/measure boundaries.",
-                            &[
-                                ("number", format!("{}", number)),
-                                (
-                                    "0",
-                                    crate::rhythm::duration_fraction(elapsed, divisions)
-                                        .to_string(),
-                                ),
-                                (
-                                    "1",
-                                    crate::rhythm::duration_fraction(measure_duration, divisions)
-                                        .to_string(),
-                                ),
-                                (
-                                    "2",
-                                    (if elapsed < measure_duration {
-                                        crate::i18n::tr("too short")
-                                    } else {
-                                        crate::i18n::tr("too long")
-                                    })
-                                    .to_string(),
-                                ),
-                            ],
-                        ),
-                        crate::i18n::tr(
-                            "Check note values, rests, dots, tuplets, chords and barlines. A pickup may be intentionally shorter.",
-                        ),
-                    );
-                    issue.measure = Some(number);
-                    warnings.report(issue);
-                }
-                if repetition + 1 == count
-                    && let Some(bar) = boundary
-                {
-                    if matches!(bar.kind, BarlineKind::RepeatStart | BarlineKind::RepeatBoth) {
-                        next_left = Some(BarlineKind::RepeatStart);
-                        next_left_source = score
-                            .barlines
-                            .iter()
-                            .position(|candidate| std::ptr::eq(candidate, bar));
-                    }
-                    if bar.kind != BarlineKind::RepeatStart || !right_endings.is_empty() {
-                        write_bar(
-                            &mut xml,
-                            if bar.kind == BarlineKind::RepeatBoth {
-                                BarlineKind::RepeatEnd
-                            } else if bar.kind == BarlineKind::RepeatStart {
-                                BarlineKind::Single
+                        for endpoint in wedges[segment_index].iter().filter(|_| voice_index == 0) {
+                            let time = if count > 1 {
+                                // A multi-measure rest represents the entire printed interval.
+                                let total = measure_duration * u128::from(count);
+                                let time = interpolate_time(
+                                    endpoint.x,
+                                    (measure_left, 0),
+                                    (segment_right, total),
+                                );
+                                let target = (time / measure_duration).min(u128::from(count - 1));
+                                if target != u128::from(repetition) {
+                                    continue;
+                                }
+                                time - u128::from(repetition) * measure_duration
                             } else {
-                                bar.kind
-                            },
-                            false,
-                            &right_endings,
-                        );
+                                wedge_time(endpoint.x, &onsets, segment_right, elapsed)
+                            };
+                            write_wedge(&mut xml, &endpoint.mark, time as i128 - elapsed as i128);
+                        }
+                        if elapsed != measure_duration {
+                            let mut issue = Issue::warning(
+                                staff_index,
+                                None,
+                                Some(measure_left),
+                                crate::i18n::format(
+                                    "Measure {number}: duration {0} instead of {1} ({2}); check note values/measure boundaries.",
+                                    &[
+                                        ("number", format!("{}", number)),
+                                        (
+                                            "0",
+                                            crate::rhythm::duration_fraction(elapsed, divisions)
+                                                .to_string(),
+                                        ),
+                                        (
+                                            "1",
+                                            crate::rhythm::duration_fraction(
+                                                measure_duration,
+                                                divisions,
+                                            )
+                                            .to_string(),
+                                        ),
+                                        (
+                                            "2",
+                                            (if elapsed < measure_duration {
+                                                crate::i18n::tr("too short")
+                                            } else {
+                                                crate::i18n::tr("too long")
+                                            })
+                                            .to_string(),
+                                        ),
+                                    ],
+                                ),
+                                crate::i18n::tr(
+                                    "Check note values, rests, dots, tuplets, chords and barlines. A pickup may be intentionally shorter.",
+                                ),
+                            );
+                            if polyphonic {
+                                issue.message = format!(
+                                    "{}: {}",
+                                    crate::i18n::format(
+                                        "Voice {voice}",
+                                        &[("voice", voice.to_string())]
+                                    ),
+                                    issue.message
+                                );
+                            }
+                            issue.measure = Some(number);
+                            warnings.report(issue);
+                        }
+                        previous_elapsed = elapsed;
                     }
+                    if repetition + 1 == count
+                        && let Some(bar) = boundary
+                    {
+                        if matches!(bar.kind, BarlineKind::RepeatStart | BarlineKind::RepeatBoth) {
+                            next_left = Some(BarlineKind::RepeatStart);
+                            next_left_source = score
+                                .barlines
+                                .iter()
+                                .position(|candidate| std::ptr::eq(candidate, bar));
+                        }
+                        if bar.kind != BarlineKind::RepeatStart || !right_endings.is_empty() {
+                            write_bar(
+                                &mut xml,
+                                if bar.kind == BarlineKind::RepeatBoth {
+                                    BarlineKind::RepeatEnd
+                                } else if bar.kind == BarlineKind::RepeatStart {
+                                    BarlineKind::Single
+                                } else {
+                                    bar.kind
+                                },
+                                false,
+                                &right_endings,
+                            );
+                        }
+                    }
+                    if repetition + 1 == count && boundary.is_none() && !right_endings.is_empty() {
+                        write_bar(&mut xml, BarlineKind::Single, false, &right_endings);
+                    }
+                    xml.end("measure");
+                    number += 1;
+                    first = false;
+                    first_in_staff = false;
                 }
-                if repetition + 1 == count && boundary.is_none() && !right_endings.is_empty() {
-                    write_bar(&mut xml, BarlineKind::Single, false, &right_endings);
-                }
-                xml.end("measure");
-                number += 1;
-                first = false;
-                first_in_staff = false;
             }
         }
+        if next_left.is_some()
+            && let Some(index) = next_left_source
+        {
+            let bar = &score.barlines[index];
+            warnings.report(Issue::warning(
+                bar.staff,
+                Some(Object::Barline(index)),
+                Some(bar.x),
+                crate::i18n::tr("Repeat start without a following measure."),
+                crate::i18n::tr("Check the barline type or add missing measures on another page."),
+            ));
+        }
+        xml.end("part");
     }
-    if next_left.is_some()
-        && let Some(index) = next_left_source
-    {
-        let bar = &score.barlines[index];
-        warnings.report(Issue::warning(
-            bar.staff,
-            Some(Object::Barline(index)),
-            Some(bar.x),
-            crate::i18n::tr("Repeat start without a following measure."),
-            crate::i18n::tr("Check the barline type or add missing measures on another page."),
-        ));
-    }
-    xml.end("part");
     xml.end("score-partwise");
     Ok(Export {
         xml: xml
@@ -1777,6 +1965,7 @@ mod tests {
             score.notes.clear();
             score.rests = vec![crate::model::Rest {
                 staff: 0,
+                voice: 1,
                 x: 100.0,
                 y: 40.0,
                 duration: Duration::Whole,
@@ -2385,7 +2574,7 @@ mod tests {
                 assert_xml(&result.xml);
                 assert!(
                     result.xml.contains(&format!(
-                        "<rest/><duration>{}</duration><type>{kind}</type>{}",
+                        "<rest/><duration>{}</duration><voice>1</voice><type>{kind}</type>{}",
                         ticks[usize::from(dots - 1)],
                         "<dot/>".repeat(usize::from(dots))
                     )),
@@ -2424,7 +2613,7 @@ mod tests {
                             .contains(&format!("<duration>{expected}</duration>"))
                     );
                     assert!(result.xml.contains(&format!(
-                        "<rest/><duration>{}</duration><type>{kind}</type>",
+                        "<rest/><duration>{}</duration><voice>1</voice><type>{kind}</type>",
                         ticks[0]
                     )));
                     assert_eq!(

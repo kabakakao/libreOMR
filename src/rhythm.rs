@@ -19,25 +19,44 @@ pub struct MeasureValidity {
     pub barline: Option<usize>,
     pub divisions: u128,
     pub actual_ticks: u128,
+    /// Independent totals for the voices present in this measure.
+    pub voice_ticks: Vec<(u8, u128)>,
     pub expected_ticks: Option<u128>,
 }
 
 impl MeasureValidity {
     pub fn is_valid(&self) -> Option<bool> {
         self.expected_ticks
-            .map(|expected| self.actual_ticks == expected)
+            .map(|expected| self.voice_ticks.iter().all(|(_, ticks)| *ticks == expected))
     }
 
     pub fn label(&self) -> String {
         let Some(expected) = self.expected_ticks else {
             return crate::i18n::tr("Unknown time signature: measure check unavailable").into();
         };
+        if self.voice_ticks.len() > 1 {
+            return self
+                .voice_ticks
+                .iter()
+                .map(|(voice, ticks)| {
+                    crate::i18n::format(
+                        "Voice {voice}: {actual}, expected {expected}",
+                        &[
+                            ("voice", voice.to_string()),
+                            ("actual", duration_fraction(*ticks, self.divisions)),
+                            ("expected", duration_fraction(expected, self.divisions)),
+                        ],
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+        }
         crate::i18n::format(
             "Measure {0}: note values {1}, expected {2}",
             &[
                 (
                     "0",
-                    (if self.actual_ticks == expected {
+                    (if self.voice_ticks.iter().all(|(_, ticks)| *ticks == expected) {
                         crate::i18n::tr("valid")
                     } else {
                         crate::i18n::tr("invalid")
@@ -128,40 +147,52 @@ impl Score {
                 .iter()
                 .filter(|(_, event)| !matches!(event, Event::Time(_)))
                 .count();
-            let mut previous: Option<&Note> = None;
-            let mut actual = 0;
+            let mut voices: std::collections::BTreeMap<u8, (Option<&Note>, u128)> =
+                Default::default();
             let mut measures = 1;
             for &(_, event) in segment {
                 match event {
                     Event::Time(index) => {
                         meter = Some(self.time_changes[index].time_signature);
-                        previous = None;
+                        for (previous, _) in voices.values_mut() {
+                            *previous = None;
+                        }
                     }
                     Event::Note(index) => {
                         let note = &self.notes[index];
+                        let (previous, actual) = voices.entry(note.voice).or_default();
                         if !previous.is_some_and(|prior| {
                             (note.x - prior.x).abs() <= staff.spacing() * 0.35
                                 && note.ticks(divisions) == prior.ticks(divisions)
                         }) {
-                            actual += note.ticks(divisions);
-                            previous = Some(note);
+                            *actual += note.ticks(divisions);
+                            *previous = Some(note);
                         }
                     }
                     Event::Rest(index) => {
                         let rest = &self.rests[index];
+                        let (previous, actual) = voices.entry(rest.voice).or_default();
+                        let count = segment
+                            .iter()
+                            .filter(|(_, event)| match *event {
+                                Event::Note(i) => self.notes[i].voice == rest.voice,
+                                Event::Rest(i) => self.rests[i].voice == rest.voice,
+                                Event::Time(_) => false,
+                            })
+                            .count();
                         let full_measure = rest.measures.is_some()
                             || (rest.duration == Duration::Whole && rest.dots == 0 && count == 1);
                         if let Some(rest_measures) = rest.measures {
                             measures = u32::from(rest_measures);
                         }
-                        actual += if full_measure {
+                        *actual += if full_measure {
                             u128::from(meter.and_then(|meter| meter.ticks()).unwrap_or(0))
                                 * u128::from(rest.measures.unwrap_or(1))
                                 * factor
                         } else {
                             rest.ticks(divisions)
                         };
-                        previous = None;
+                        *previous = None;
                     }
                 }
             }
@@ -178,7 +209,15 @@ impl Score {
                     right,
                     barline: boundary.map(|(index, _)| index),
                     divisions,
-                    actual_ticks: actual,
+                    actual_ticks: voices.values().map(|(_, ticks)| *ticks).max().unwrap_or(0),
+                    voice_ticks: if voices.is_empty() {
+                        vec![(1, 0)]
+                    } else {
+                        voices
+                            .iter()
+                            .map(|(voice, (_, ticks))| (*voice, *ticks))
+                            .collect()
+                    },
                     expected_ticks: meter
                         .and_then(|meter| meter.ticks())
                         .map(|ticks| u128::from(ticks) * u128::from(measures) * factor),

@@ -264,7 +264,7 @@ pub fn predict(score: &Score) -> (Vec<Object>, Vec<Object>) {
         let mut clef = Object::new(
             "clef",
             match staff.header.clef {
-                Clef::Treble => "clef.treble",
+                Clef::Treble | Clef::Treble8vb => "clef.treble",
                 Clef::Bass => "clef.bass",
                 Clef::Unknown => "clef.unknown",
             },

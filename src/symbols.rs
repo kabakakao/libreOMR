@@ -1007,13 +1007,8 @@ fn hollow_noteheads(binary: &GrayImage, staff: &Staff, prepared: &HeaderImage) -
     let bottom = (staff.lines[4] + staff.spacing() * 5.0).min(binary.height() as f32) as u32;
     let right = staff.right.min(binary.width() as f32) as u32;
     let raw = imageops::crop_imm(binary, left, top, right - left, bottom - top).to_image();
-    let raw = imageops::resize(
-        &raw,
-        prepared.image.width(),
-        prepared.image.height(),
-        FilterType::Triangle,
-    );
-    let raw = imageproc::contrast::threshold(&raw, 127, imageproc::contrast::ThresholdType::Binary);
+    // Preserve native closed contours. Downsampling can open a thin ring at
+    // particular subpixel positions and lose otherwise identical half notes.
     let labels = imageproc::region_labelling::connected_components(
         &raw,
         imageproc::region_labelling::Connectivity::Four,
@@ -1036,21 +1031,22 @@ fn hollow_noteheads(binary: &GrayImage, staff: &Staff, prepared: &HeaderImage) -
     }
     let mut holes: Vec<(f32, f32, f32)> = Vec::new();
     for (left, top, right, bottom, count, sum_x, sum_y) in components.into_iter().skip(1) {
-        let width = (right - left + 1) as f32;
-        let height = (bottom - top + 1) as f32;
+        let width = (right - left + 1) as f32 * prepared.scale;
+        let height = (bottom - top + 1) as f32 * prepared.scale;
+        let area = count as f32 * prepared.scale * prepared.scale;
         if left == 0
             || top == 0
             || right + 1 == raw.width()
             || bottom + 1 == raw.height()
             || !(2.5..=13.0).contains(&width)
             || !(1.0..=8.0).contains(&height)
-            || !(4..=65).contains(&count)
+            || !(4.0..=65.0).contains(&area)
             || width < height * 0.8
         {
             continue;
         }
-        let x = prepared.left + (sum_x as f32 / count as f32) / prepared.scale;
-        let y = prepared.top + (sum_y as f32 / count as f32) / prepared.scale;
+        let x = prepared.left + sum_x as f32 / count as f32;
+        let y = prepared.top + sum_y as f32 / count as f32;
         if let Some(hole) = holes.iter_mut().find(|hole| {
             (hole.0 - x).abs() < staff.spacing() * 0.65
                 && (hole.1 - y).abs() < staff.spacing() * 0.45
@@ -1084,7 +1080,32 @@ fn hollow_noteheads(binary: &GrayImage, staff: &Staff, prepared: &HeaderImage) -
                                 < staff.spacing() * 0.3
                     },
                 )
-                .is_some_and(|found| found.quality >= 0.66)
+                .is_some_and(|found| {
+                    if found.quality < 0.66 {
+                        return false;
+                    }
+                    let cx = (found.bounds.left + found.bounds.right) * 0.5;
+                    let cy = (found.bounds.top + found.bounds.bottom) * 0.5;
+                    // A filled head can enclose a tiny region against a staff
+                    // line/stem, but its central body must remain filled.
+                    let mut white = 0;
+                    let mut count = 0;
+                    for dy in -2..=2 {
+                        for dx in -3..=3 {
+                            let x = (cx + dx as f32 * staff.spacing() * 0.07).round() as i32;
+                            let y = (cy + dy as f32 * staff.spacing() * 0.07).round() as i32;
+                            if x >= 0
+                                && y >= 0
+                                && x < binary.width() as i32
+                                && y < binary.height() as i32
+                            {
+                                white += usize::from(binary.get_pixel(x as u32, y as u32)[0] != 0);
+                                count += 1;
+                            }
+                        }
+                    }
+                    white * 5 >= count
+                })
         })
         .map(|(x, y, _)| Notehead {
             x,
@@ -1589,6 +1610,7 @@ fn recognize_multimeasure_rests(
                 x: center,
                 y: middle,
                 staff: staff_index,
+                voice: 1,
                 duration: Duration::Whole,
                 dots: 0,
                 measures: Some(count),
@@ -1760,6 +1782,7 @@ pub fn recognize_rests(binary: &GrayImage, staff: &Staff, staff_index: usize) ->
             x,
             y,
             staff: staff_index,
+            voice: 1,
             duration,
             dots: 0,
             measures: None,
@@ -1864,9 +1887,49 @@ fn recognize_header_at(binary: &GrayImage, staff: &Staff) -> StaffHeader {
                 let image = HeaderImage::region_with_margin(binary, &local, local.right, margin);
                 let header = recognize_header_image(&image, &local);
                 if header.clef != Clef::Unknown {
-                    return header;
+                    return recognize_octave(binary, staff, header);
                 }
             }
+        }
+    }
+    header
+}
+
+fn recognize_octave(binary: &GrayImage, staff: &Staff, mut header: StaffHeader) -> StaffHeader {
+    if header.clef == Clef::Treble
+        && let Some(bounds) = &header.clef_bounds
+    {
+        let image =
+            HeaderImage::region_with_margin(binary, staff, bounds.right + staff.spacing(), 4.0);
+        let x = (bounds.left - image.left) * image.scale;
+        let y = (bounds.bottom - image.top) * image.scale;
+        if image
+            .find_filtered(
+                &trimmed_glyph('\u{e088}'),
+                &[
+                    0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.9, 1.0, 1.1,
+                ],
+                [
+                    x - UNIT * 0.3,
+                    y - UNIT * 0.8,
+                    x + UNIT * 2.5,
+                    y + UNIT * 1.8,
+                ],
+                |bounds| {
+                    let left = (bounds.left - 1.0).max(0.0) as u32;
+                    let top = (bounds.top - 1.0).max(0.0) as u32;
+                    let right = (bounds.right + 1.0).min(binary.width() as f32) as u32;
+                    let bottom = (bounds.bottom + 1.0).min(binary.height() as f32) as u32;
+                    let mut crop =
+                        imageops::crop_imm(binary, left, top, right - left, bottom - top)
+                            .to_image();
+                    imageops::invert(&mut crop);
+                    enclosed_spaces(&crop) == 2
+                },
+            )
+            .is_some_and(|found| found.quality >= 0.72)
+        {
+            header.clef = Clef::Treble8vb;
         }
     }
     header
@@ -1965,6 +2028,10 @@ fn recognize_header_image(image: &HeaderImage, staff: &Staff) -> StaffHeader {
     for meter in [
         TimeSignature::Common,
         TimeSignature::Cut,
+        TimeSignature::Meter {
+            beats: 4,
+            beat_unit: 2,
+        },
         TimeSignature::Meter {
             beats: 2,
             beat_unit: 2,
@@ -4057,6 +4124,10 @@ mod tests {
             TimeSignature::Common,
             TimeSignature::Cut,
             TimeSignature::Meter {
+                beats: 4,
+                beat_unit: 2,
+            },
+            TimeSignature::Meter {
                 beats: 2,
                 beat_unit: 2,
             },
@@ -4107,6 +4178,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn octave_digit_below_treble_clef_changes_sounding_pitch() {
+        let (mut image, staff) = printed_header('\u{e050}', 6.4, TimeSignature::Common);
+        let header = recognize_header(&image, &staff);
+        let bounds = header.clef_bounds.as_ref().unwrap();
+        let eight = resized(&trimmed_glyph('\u{e088}'), staff.spacing() * 0.65);
+        let left = ((bounds.left + bounds.right) * 0.5 - eight.width() as f32 * 0.5) as u32;
+        let top = (bounds.bottom + 1.0) as u32;
+        for (x, y, pixel) in eight.enumerate_pixels() {
+            if pixel[0] > 127 {
+                image.put_pixel(left + x, top + y, Luma([0]));
+            }
+        }
+        assert_eq!(recognize_header(&image, &staff).clef, Clef::Treble8vb);
     }
 
     #[test]

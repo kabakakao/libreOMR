@@ -44,7 +44,12 @@ are required. See [Screenshots](../assets/screenshots/README.md) for captures.
 ## Architecture
 
 - `src/model.rs`: notes, rests, measure boundaries, measure-scoped accidentals,
-  staff key signatures, slurs/ties/wedges and the versioned project format.
+  staff key signatures, part assignments, lyrics, slurs/ties/wedges and the
+  versioned project format.
+- `src/score_structure.rs`: bracketed system grouping, persistent part proposals,
+  positioned lyric alignment and safe lyric references when notes are deleted.
+- `src/pdf_text.rs`: native positioned Unicode extraction using the PDF
+  rasterizer's crop, rotation and scale transform.
 - `src/rhythm.rs`: sums note values per measure and compares them with the active
   time signature for validity overlays in the scan and preview.
 - `src/recognition.rs`: conservative deskewing, binarization and connected
@@ -86,6 +91,21 @@ under SIL Open Font License 1.1. Include
 [assets/Bravura-LICENSE.txt](../assets/Bravura-LICENSE.txt) when distributing the
 font or a package containing it. Templates do not store crops from user scores.
 
+## Manual voices and multiple selection
+
+Notes and rests store a voice number from 1 to 4, defaulting to 1 when an older
+project omits the field. The editor supports Ctrl/Cmd toggles and Shift ranges
+across the scan, preview and object list. Shared voice/duration edits and
+selection deletion create one history entry; note deletion retains lyric
+reference cleanup. Measure validity checks every voice separately, and
+MusicXML emits voice elements and backs up the cursor between voices in each
+measure. Onsets within a voice still follow source position and written values;
+missing leading events must be represented by rests. Recognition initially
+assigns voice 1, so independent voices require manual assignment.
+
+Regression coverage: `cargo test --profile ci --locked --test staff_voices`
+and `cargo test --profile ci --locked --bin libreomr multiselect`.
+
 ## Limitations and next steps
 
 The baseline may fail or produce false notes on skewed scans, short staves,
@@ -101,8 +121,9 @@ Clef recognition is limited to staff starts and can fail with unfamiliar fonts
 or damaged symbols. Weak/ambiguous matches remain unknown, though false
 classifications are still possible. Preview and MusicXML carry the time signature
 forward until another printed or manually inserted signature. Staves form one
-continuous part without instrument/voice assignment. Key signatures are not
-inherited across staves. An empty key signature is confirmed only when a clear
+continuous part when unassigned; bracketed systems can carry separate parts
+across pages. Independent voices sharing a staff are not reconstructed.
+An empty key signature is confirmed only when a clear
 gap is observed between recognized clef and meter; otherwise it stays unknown.
 
 Rest recognition targets upright, largely isolated standard shapes. Short rests
@@ -136,14 +157,14 @@ templates. Separate fermata components and combined symbols are compared
 together. Cleanup checks actual continuous lines to preserve marks near heads.
 Stem/slur overlap, close barlines, text and unfamiliar fonts can still cause
 missing or false proposals. Each note has one articulation selection, including
-combinations. There is no voice assignment.
+combinations. Independent voices sharing a staff are not assigned.
 
 Dynamic letters must be largely isolated above/below the staff, within six
 spacings. Connected groups are matched together so `pp` is not reduced to `p`.
 Additional text, collisions, damage and other fonts can prevent recognition.
 Assignment between staves considers distance to the staff edge, preferring the
 usual position below a staff. Proposals remain unreviewed. MusicXML places them
-by horizontal position in the existing single-part model; this does not reconstruct
+by horizontal position within each exported part; this does not reconstruct
 independent rhythmic timing.
 
 Clef changes within a staff are not implemented. Printed meter changes are
@@ -192,9 +213,12 @@ Priorities for further development:
 3. Model-based symbol recognition with uncertain candidates for review.
 4. A richer model for clef changes, keys, measures, voices, chords, polyphonic
    rests, semantic note links and rhythmic plausibility.
-5. Polyphonic MusicXML export and MIDI playback. Current single-part export
-   does not replace rhythmic/voice reconstruction.
+5. Same-staff polyphonic MusicXML export and MIDI playback. Current part-based
+   export does not replace rhythmic/voice reconstruction within a staff.
 6. Installable packages for Linux, Windows and macOS.
+
+See [Polyphonic scores and lyrics](polyphonic-scores-and-lyrics.md) for the
+SATB sample analysis, model/export gaps and proposed implementation milestones.
 
 ## Existing OMR engines
 
@@ -421,3 +445,22 @@ flats and one flat:
 LIBREOMR_KULTTOUR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \
 cargo test --release --locked --no-default-features external_kulttour_headers_on_all_pages -- --ignored
 ```
+
+Scans without positioned PDF text use `rusto-rs` with its default features
+disabled and RTen for inference in Rust. RTen requires Rust 1.94 or newer.
+The multilingual PP-OCRv6 Tiny
+models and dictionary are embedded from `assets/ocr/`; that directory records
+provenance, checksums and the upstream license. Model files are materialized
+in a temporary directory during initialization, then removed. No page data
+is sent to external services. Native text layers retain their original bounds.
+OCR first reads the page, then refines the spaces between staves at higher
+resolution. It runs in the import worker and reports progress/errors through
+the existing job interface. Neither platform OCR APIs nor external executables
+are required. The same implementation is compiled on all supported targets.
+
+Staff detection supplements the full-width projection with agreement between
+several local strips, then estimates horizontal boundaries from support across
+four staff lines. This recovers gently curved scan rows and excludes isolated
+page borders. Global deskew acceptance still uses the full-width projection.
+Lyrics can be attached above or below the same note; placement is part of their
+identity and survives project serialization, editing, preview and MusicXML.

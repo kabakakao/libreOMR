@@ -3,7 +3,7 @@ name = "libreomr"
 version = "0.1.2"
 default-run = "libreomr"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.94"
 description = "Interactive, cross-platform optical music recognition prototype"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/kabakakao/libreOMR"
@@ -33,6 +33,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 imageproc = { version = "0.25", default-features = false }
 quick-xml = "0.38"
 rfd = { version = "0.15", optional = true }
+rusto-rs = { version = "0.3.2", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sys-locale = "0.3"

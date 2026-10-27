@@ -234,10 +234,19 @@ pub(crate) enum Selection {
 
 pub(crate) struct Preview {
     glyphs: HashMap<(char, u32), Glyph>,
+    pub(crate) selection: Vec<Selection>,
     pub(crate) fit_width: bool,
     scale: f32,
     anchor_drag: Option<AnchorDrag>,
     anchor_edit: Option<AnchorEdit>,
+    document_layout: Option<ScoreLayout>,
+    document_scale: f32,
+    zoom: f32,
+    last_follow: Option<FollowTarget>,
+    last_view: Vec2,
+    last_fit: bool,
+    #[cfg(test)]
+    canvas_view: Option<(egui::Id, Rect, Vec2, Vec2)>,
 }
 
 pub(crate) struct AnchorEdit {
@@ -284,10 +293,19 @@ impl Default for Preview {
     fn default() -> Self {
         Self {
             glyphs: HashMap::new(),
+            selection: vec![],
             fit_width: false,
             scale: 1.0,
             anchor_drag: None,
             anchor_edit: None,
+            document_layout: None,
+            document_scale: 1.0,
+            zoom: 1.0,
+            last_follow: None,
+            last_view: Vec2::ZERO,
+            last_fit: false,
+            #[cfg(test)]
+            canvas_view: None,
         }
     }
 }
@@ -304,6 +322,98 @@ enum Item {
     Bar(usize),
     KeyChange(usize),
     TimeChange(usize),
+}
+
+#[derive(Clone)]
+struct RowLayout {
+    staff: usize,
+    items: Vec<(f32, Item)>,
+    positioned: Vec<(f32, Item)>,
+    measures: Vec<MeasureValidity>,
+    time_signature: Option<TimeSignature>,
+    key_count: u8,
+    header_width: f32,
+    upper: f32,
+    lower: f32,
+    lyric_top: f32,
+    lyric_above: f32,
+    measure_end: f32,
+    staff_end: f32,
+    leftmost: f32,
+    natural_width: f32,
+    axis: Option<SystemAxis>,
+}
+
+impl RowLayout {
+    fn height(&self) -> f32 {
+        (self.lower - self.upper) * GAP + 16.0
+    }
+
+    fn map_x(&self, source: f32, staff: &libreomr::model::Staff) -> f32 {
+        if let Some(axis) = &self.axis {
+            return axis.map_x(source);
+        }
+        if self.items.is_empty() {
+            return self.header_width + (source - staff.left) / staff.spacing() * GAP;
+        }
+        for index in 1..self.items.len() {
+            if source <= self.items[index].0 && self.items[index].0 > self.items[index - 1].0 {
+                let fraction = (source - self.items[index - 1].0)
+                    / (self.items[index].0 - self.items[index - 1].0);
+                return self.positioned[index - 1].0
+                    + (self.positioned[index].0 - self.positioned[index - 1].0) * fraction;
+            }
+        }
+        let index = if source <= self.items[0].0 {
+            0
+        } else {
+            self.items.len() - 1
+        };
+        self.positioned[index].0 + (source - self.items[index].0) / staff.spacing() * GAP
+    }
+}
+
+#[derive(Clone)]
+struct SystemAxis {
+    points: Vec<(f32, f32)>,
+    spacing: f32,
+    header: f32,
+}
+
+impl SystemAxis {
+    fn map_x(&self, source: f32) -> f32 {
+        let next = self.points.partition_point(|&(x, _)| x < source);
+        if next > 0 && next < self.points.len() {
+            let (a, x) = self.points[next - 1];
+            let (b, y) = self.points[next];
+            return x + (y - x) * (source - a) / (b - a);
+        }
+        let &(x, y) = if next == 0 {
+            self.points.first().unwrap()
+        } else {
+            self.points.last().unwrap()
+        };
+        y + (source - x) / self.spacing * GAP
+    }
+}
+
+#[derive(Clone)]
+struct SystemLayout {
+    rows: Vec<(RowLayout, Rect)>,
+    rect: Rect,
+}
+
+#[derive(Clone)]
+struct ScoreLayout {
+    systems: Vec<SystemLayout>,
+    size: Vec2,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct FollowTarget {
+    selected: Option<Selection>,
+    staff: usize,
+    position: [f32; 2],
 }
 
 fn key_change_symbols(score: &Score, index: usize) -> Vec<(char, i32)> {
@@ -445,6 +555,7 @@ impl Preview {
         self.show_with_inherited(ui, score, staff_index, selected, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn show_with_inherited(
         &mut self,
         ui: &mut egui::Ui,
@@ -461,6 +572,356 @@ impl Preview {
         clicked
     }
 
+    pub(crate) fn zoom_by(&mut self, factor: f32) {
+        let current = if self.fit_width {
+            self.document_scale
+        } else {
+            self.zoom
+        };
+        self.zoom = (current * factor).clamp(0.15, 2.5);
+        self.fit_width = false;
+        self.last_follow = None;
+    }
+
+    fn score_layout(
+        ui: &mut egui::Ui,
+        score: &Score,
+        inherited: Option<TimeSignature>,
+    ) -> ScoreLayout {
+        let mut order: Vec<_> = (0..score.staves.len()).collect();
+        order.sort_by(|&a, &b| score.staves[a].lines[0].total_cmp(&score.staves[b].lines[0]));
+        let system_of = |staff| {
+            score
+                .staff_assignments
+                .iter()
+                .find(|a| a.staff == staff)
+                .map(|a| a.system)
+        };
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for staff in order {
+            if system_of(staff).is_some()
+                && groups
+                    .last()
+                    .and_then(|g| g.last())
+                    .is_some_and(|&prior| system_of(prior) == system_of(staff))
+            {
+                groups.last_mut().unwrap().push(staff);
+            } else {
+                groups.push(vec![staff]);
+            }
+        }
+        let mut systems = Vec::new();
+        let mut y = 8.0_f32;
+        let mut width = 1.0_f32;
+        let mut lyric_widths: HashMap<usize, f32> = HashMap::new();
+        for lyric in &score.lyrics {
+            let width = ui
+                .painter()
+                .layout_no_wrap(
+                    lyric.text.clone(),
+                    egui::FontId::proportional(13.0),
+                    Color32::BLACK,
+                )
+                .size()
+                .x
+                + 14.0;
+            lyric_widths
+                .entry(lyric.note)
+                .and_modify(|w| *w = w.max(width))
+                .or_insert(width);
+        }
+        for group in groups {
+            let mut rows: Vec<_> = group
+                .into_iter()
+                .filter_map(|s| Self::layout_row(ui, score, s, false, inherited))
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let spacing = rows
+                .iter()
+                .map(|r| score.staves[r.staff].spacing())
+                .sum::<f32>()
+                / rows.len() as f32;
+            let header = rows
+                .iter()
+                .map(|r| r.positioned.first().map_or(r.header_width, |p| p.0))
+                .fold(0.0, f32::max);
+            let mut anchors = Vec::new();
+            for row in &rows {
+                for &(x, item) in &row.items {
+                    let mut item_width = item.width(score);
+                    if let Item::Note(note) = item {
+                        item_width =
+                            item_width.max(lyric_widths.get(&note).copied().unwrap_or(0.0));
+                    }
+                    anchors.push((x, item_width));
+                }
+                anchors.push((score.staves[row.staff].right, 24.0));
+            }
+            anchors.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut columns: Vec<(f32, f32)> = Vec::new();
+            for (x, w) in anchors {
+                if let Some(last) = columns.last_mut()
+                    && (last.0 - x).abs() < spacing * 0.35
+                {
+                    last.1 = last.1.max(w);
+                } else {
+                    columns.push((x, w));
+                }
+            }
+            let mut points = Vec::new();
+            let mut cursor = header;
+            for (i, &(x, w)) in columns.iter().enumerate() {
+                if i > 0 {
+                    let minimum = (w + columns[i - 1].1) * 0.5;
+                    cursor += ((x - columns[i - 1].0) / spacing * GAP)
+                        .clamp(minimum, 180.0_f32.max(minimum));
+                }
+                points.push((x, cursor));
+            }
+            let axis = SystemAxis {
+                points,
+                spacing,
+                header,
+            };
+            let leftmost = rows.iter().map(|r| r.leftmost).fold(0.0, f32::min);
+            let staff_end = axis.points.last().unwrap().1 + GAP * 2.0;
+            let natural_width = staff_end + 8.0 - leftmost;
+            let start = y;
+            let mut laid_out = Vec::new();
+            for mut row in rows.drain(..) {
+                for (position, item) in &mut row.positioned {
+                    let source = match *item {
+                        Item::Note(i) => score.notes[i].x,
+                        Item::Rest(i) => score.rests[i].x,
+                        Item::Bar(i) => score.barlines[i].x,
+                        Item::KeyChange(i) => score.key_changes[i].x,
+                        Item::TimeChange(i) => score.time_changes[i].x,
+                    };
+                    *position = axis.map_x(source);
+                }
+                row.header_width = axis.header;
+                row.leftmost = leftmost;
+                row.staff_end = staff_end;
+                row.measure_end = axis.map_x(score.staves[row.staff].right);
+                row.natural_width = natural_width;
+                row.axis = Some(axis.clone());
+                let rect =
+                    Rect::from_min_size(Pos2::new(0.0, y), Vec2::new(natural_width, row.height()));
+                y = rect.bottom();
+                laid_out.push((row, rect));
+            }
+            width = width.max(natural_width);
+            systems.push(SystemLayout {
+                rows: laid_out,
+                rect: Rect::from_min_max(Pos2::new(0.0, start), Pos2::new(natural_width, y)),
+            });
+            y += 24.0;
+        }
+        ScoreLayout {
+            systems,
+            size: Vec2::new(width, y),
+        }
+    }
+
+    fn follow_target(score: &Score, staff: usize, selected: Option<Selection>) -> FollowTarget {
+        let (staff, position) = match selected {
+            Some(Selection::Note(i)) => score.notes.get(i).map(|n| (n.staff, [n.x, n.y])),
+            Some(Selection::Rest(i)) => score.rests.get(i).map(|n| (n.staff, [n.x, n.y])),
+            Some(Selection::Dynamic(i)) => score.dynamics.get(i).map(|n| (n.staff, [n.x, n.y])),
+            Some(Selection::RepeatMark(i)) => {
+                score.repeat_marks.get(i).map(|n| (n.staff, [n.x, n.y]))
+            }
+            Some(Selection::Span(i)) => score.spans.get(i).map(|n| (n.staff, n.start)),
+            Some(Selection::Barline(i)) => score
+                .barlines
+                .get(i)
+                .map(|n| (n.staff, [n.x, score.staves[n.staff].lines[2]])),
+            Some(Selection::KeyChange(i)) => score
+                .key_changes
+                .get(i)
+                .map(|n| (n.staff, [n.x, score.staves[n.staff].lines[2]])),
+            Some(Selection::TimeChange(i)) => score
+                .time_changes
+                .get(i)
+                .map(|n| (n.staff, [n.x, score.staves[n.staff].lines[2]])),
+            None => None,
+        }
+        .unwrap_or_else(|| {
+            (
+                staff,
+                score
+                    .staves
+                    .get(staff)
+                    .map_or([0.0, 0.0], |s| [(s.left + s.right) * 0.5, s.lines[2]]),
+            )
+        });
+        FollowTarget {
+            selected,
+            staff,
+            position,
+        }
+    }
+
+    pub(crate) fn show_document(
+        &mut self,
+        ui: &mut egui::Ui,
+        score: &Score,
+        staff: usize,
+        selected: Option<Selection>,
+        inherited: Option<TimeSignature>,
+    ) -> Option<Selection> {
+        if score.staves.is_empty() {
+            ui.label(i18n::tr("No staff"));
+            return None;
+        }
+        let dragging = self.anchor_drag.is_some();
+        let layout = if dragging && let Some(layout) = &self.document_layout {
+            layout.clone()
+        } else {
+            Self::score_layout(ui, score, inherited)
+        };
+        let target = Self::follow_target(score, staff, selected);
+        let system = layout
+            .systems
+            .iter()
+            .find(|s| s.rows.iter().any(|(r, _)| r.staff == target.staff))?;
+        let viewport = ui.available_size();
+        let scale = if self.fit_width {
+            ((viewport.x - 16.0).max(1.0) / layout.size.x).clamp(0.03, 1.5)
+        } else {
+            self.zoom
+        };
+        let scale = if dragging { self.document_scale } else { scale };
+        let follow = !dragging
+            && (self.last_follow != Some(target)
+                || self.last_view != viewport
+                || self.last_fit != self.fit_width);
+        self.document_scale = scale;
+        self.anchor_edit = None;
+        let mut clicked = None;
+        let output = egui::ScrollArea::both()
+            .id_salt("score_preview_canvas")
+            .auto_shrink([false, false])
+            .animated(false)
+            .scroll_source(egui::scroll_area::ScrollSource {
+                drag: false,
+                ..Default::default()
+            })
+            .show(ui, |ui| {
+                let content = layout.size * scale;
+                let (background, _) = ui.allocate_exact_size(
+                    Vec2::new(content.x.max(ui.available_width()), content.y),
+                    Sense::hover(),
+                );
+                ui.painter().rect_filled(background, 0.0, Color32::WHITE);
+                let canvas = Rect::from_min_size(
+                    background.min + Vec2::new((background.width() - content.x) * 0.5, 0.0),
+                    content,
+                );
+                let screen = |rect: Rect| {
+                    Rect::from_min_max(
+                        canvas.min + rect.min.to_vec2() * scale,
+                        canvas.min + rect.max.to_vec2() * scale,
+                    )
+                };
+                if follow {
+                    let focus = {
+                        let (row, rect) = system
+                            .rows
+                            .iter()
+                            .find(|(r, _)| r.staff == target.staff)
+                            .unwrap();
+                        let x = row.map_x(target.position[0], &score.staves[target.staff])
+                            - row.leftmost;
+                        let mut focus = Rect::from_min_size(
+                            Pos2::new((x - 80.0).max(0.0), rect.top()),
+                            Vec2::new(160.0, rect.height()),
+                        );
+                        let note_level = (target.position[1] - score.staves[target.staff].lines[0])
+                            / score.staves[target.staff].spacing();
+                        if focus.height() * scale > viewport.y {
+                            let y = rect.top() + 8.0 + (note_level - row.upper) * GAP;
+                            focus = Rect::from_center_size(
+                                Pos2::new(x, y),
+                                Vec2::new(160.0, (viewport.y / scale - 12.0).max(24.0)),
+                            );
+                        }
+                        screen(focus)
+                    };
+                    ui.scroll_to_rect(focus, Some(egui::Align::Center));
+                }
+                for group in &layout.systems {
+                    for (row, bounds) in &group.rows {
+                        let rect = screen(*bounds);
+                        if ui.is_rect_visible(rect) {
+                            ui.push_id(("score_staff", row.staff), |ui| {
+                                clicked = self
+                                    .paint_row(ui, score, row, rect, scale, selected, false)
+                                    .or(clicked);
+                            });
+                        }
+                    }
+                    if group.rows.len() > 1 {
+                        let (first, first_rect) = &group.rows[0];
+                        let (last, last_rect) = group.rows.last().unwrap();
+                        let top = canvas.min
+                            + Vec2::new(8.0, first_rect.top() + 8.0 - first.upper * GAP) * scale;
+                        let bottom = canvas.min
+                            + Vec2::new(8.0, last_rect.top() + 8.0 + (4.0 - last.upper) * GAP)
+                                * scale;
+                        ui.painter()
+                            .line_segment([top, bottom], Stroke::new(scale, Color32::DARK_GRAY));
+                        for p in [top, bottom] {
+                            ui.painter().line_segment(
+                                [p, p + Vec2::new(4.0 * scale, 0.0)],
+                                Stroke::new(scale, Color32::DARK_GRAY),
+                            );
+                        }
+                    }
+                }
+                if selected.is_some()
+                    && let Some((row, _)) =
+                        system.rows.iter().find(|(r, _)| r.staff == target.staff)
+                {
+                    let x =
+                        row.map_x(target.position[0], &score.staves[target.staff]) - row.leftmost;
+                    let band = Rect::from_min_max(
+                        Pos2::new(x - 10.0, system.rect.top()),
+                        Pos2::new(x + 10.0, system.rect.bottom()),
+                    );
+                    ui.painter().rect_filled(
+                        screen(band),
+                        0.0,
+                        Color32::from_rgba_unmultiplied(0, 95, 180, 12),
+                    );
+                }
+            });
+        // Store viewport geometry, not content size: manual panning must not re-trigger following.
+        #[cfg(test)]
+        {
+            self.canvas_view = Some((
+                output.id,
+                output.inner_rect,
+                output.state.offset,
+                output.content_size,
+            ));
+        }
+        #[cfg(not(test))]
+        let _ = output;
+        if !dragging {
+            self.last_follow = Some(target);
+            self.last_view = viewport;
+            self.last_fit = self.fit_width;
+        }
+        self.document_layout = Some(layout);
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.anchor_drag = None;
+        }
+        clicked
+    }
+
     pub(crate) fn take_anchor_edit(&mut self) -> Option<AnchorEdit> {
         self.anchor_edit.take()
     }
@@ -470,13 +931,13 @@ impl Preview {
         ui: &mut egui::Ui,
         score: &Score,
         selected: Selection,
-        height: f32,
+        max_height: f32,
     ) {
         let Some(isolated) = Self::isolate_object(score, selected) else {
             return;
         };
         ui.allocate_ui_with_layout(
-            Vec2::new(ui.available_width(), height),
+            Vec2::new(ui.available_width(), max_height),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 self.show_score(ui, &isolated, 0, None, true, None);
@@ -619,15 +1080,13 @@ impl Preview {
         Some(isolated)
     }
 
-    fn show_score(
-        &mut self,
+    fn layout_row(
         ui: &mut egui::Ui,
         score: &Score,
         staff_index: usize,
-        selected: Option<Selection>,
         fit_object: bool,
         inherited: Option<TimeSignature>,
-    ) -> Option<Selection> {
+    ) -> Option<RowLayout> {
         let Some(staff) = score.staves.get(staff_index) else {
             ui.label(i18n::tr("No staff"));
             return None;
@@ -720,7 +1179,7 @@ impl Preview {
         // by a full stem length in both directions.
         let mut upper = match staff.header.clef {
             Clef::Unknown => -3.2_f32,
-            Clef::Treble => -1.0,
+            Clef::Treble | Clef::Treble8vb => -1.0,
             Clef::Bass => -0.2,
         };
         let mut lower = if staff.header.clef == Clef::Bass {
@@ -737,7 +1196,19 @@ impl Preview {
         }
         for note in score.notes.iter().filter(|note| note.staff == staff_index) {
             let level = relative(note.pitch);
-            let down = level <= 2.0;
+            let polyphonic = score
+                .notes
+                .iter()
+                .any(|n| n.staff == note.staff && n.voice > 1)
+                || score
+                    .rests
+                    .iter()
+                    .any(|r| r.staff == note.staff && r.voice > 1);
+            let down = if polyphonic {
+                note.voice.is_multiple_of(2)
+            } else {
+                level <= 2.0
+            };
             upper = upper.min(level - 0.6);
             lower = lower.max(level + 0.6);
             if note.duration != Duration::Whole {
@@ -850,6 +1321,34 @@ impl Preview {
                 );
             }
         }
+        let verse_count = score
+            .lyrics
+            .iter()
+            .filter(|l| {
+                score.notes[l.note].staff == staff_index
+                    && l.placement == libreomr::model::LyricPlacement::Below
+            })
+            .map(|l| l.verse)
+            .max()
+            .unwrap_or(0);
+        let lyric_top = lower + 2.0;
+        if verse_count > 0 {
+            lower = lyric_top + f32::from(verse_count) * 1.8;
+        }
+        let above_count = score
+            .lyrics
+            .iter()
+            .filter(|l| {
+                score.notes[l.note].staff == staff_index
+                    && l.placement == libreomr::model::LyricPlacement::Above
+            })
+            .map(|l| l.verse)
+            .max()
+            .unwrap_or(0);
+        let lyric_above = upper - 2.0 - f32::from(above_count.saturating_sub(1)) * 1.8;
+        if above_count > 0 {
+            upper = lyric_above - 0.9;
+        }
         let map_x = |source: f32| {
             if items.is_empty() {
                 return header_width + (source - staff.left) / staff.spacing() * GAP;
@@ -913,7 +1412,7 @@ impl Preview {
                     }),
             )
             .fold(item_end, f32::max);
-        let mut leftmost = score
+        let leftmost = score
             .spans
             .iter()
             .filter(|span| span.staff == staff_index)
@@ -944,16 +1443,46 @@ impl Preview {
             )
             .fold(0.0_f32, f32::min);
         let staff_end = rightmost + GAP;
-        let mut natural_width = (staff_end + 8.0 - leftmost).max(1.0);
+        let natural_width = (staff_end + 8.0 - leftmost).max(1.0);
+        Some(RowLayout {
+            staff: staff_index,
+            items,
+            positioned,
+            measures,
+            time_signature,
+            key_count,
+            header_width,
+            upper,
+            lower,
+            lyric_top,
+            lyric_above,
+            measure_end,
+            staff_end,
+            leftmost,
+            natural_width,
+            axis: None,
+        })
+    }
+
+    fn show_score(
+        &mut self,
+        ui: &mut egui::Ui,
+        score: &Score,
+        staff_index: usize,
+        selected: Option<Selection>,
+        fit_object: bool,
+        inherited: Option<TimeSignature>,
+    ) -> Option<Selection> {
+        let mut layout = Self::layout_row(ui, score, staff_index, fit_object, inherited)?;
         let fit_width = self.fit_width || fit_object;
         self.scale = if fit_width {
-            ((ui.available_width() - 12.0).max(1.0) / natural_width).clamp(0.01, 1.0)
+            ((ui.available_width() - 12.0).max(1.0) / layout.natural_width).clamp(0.01, 1.0)
         } else {
             1.0
         };
         if fit_object {
             self.scale = self.scale.min(
-                ((ui.available_height() - 16.0).max(1.0) / ((lower - upper) * GAP))
+                ((ui.available_height() - 16.0).max(1.0) / ((layout.lower - layout.upper) * GAP))
                     .clamp(0.01, 1.0),
             );
         }
@@ -964,725 +1493,900 @@ impl Preview {
                 .get(drag.index)
                 .is_some_and(|span| span.staff == staff_index)
         {
-            upper = drag.upper;
-            lower = drag.lower;
-            leftmost = drag.leftmost;
-            natural_width = drag.natural_width;
+            layout.upper = drag.upper;
+            layout.lower = drag.lower;
+            layout.leftmost = drag.leftmost;
+            layout.natural_width = drag.natural_width;
             self.scale = drag.scale;
         }
         let scale = self.scale;
-        let mut clicked = None;
         egui::ScrollArea::new([!fit_width, !fit_object])
             .id_salt(("preview_scroll", staff_index, fit_width, fit_object))
-            .auto_shrink([false, false])
+            // Object previews use only the fitted notation height, even when
+            // their parent offers more room. Document previews keep scrolling.
+            .auto_shrink([false, fit_object])
             .show(ui, |ui| {
-                let width = (natural_width * scale).max(ui.available_width());
+                let width = (layout.natural_width * scale).max(ui.available_width());
                 let (rect, _) = ui.allocate_exact_size(
-                    Vec2::new(width, (lower - upper) * GAP * scale + 16.0),
+                    Vec2::new(width, (layout.lower - layout.upper) * GAP * scale + 16.0),
                     Sense::hover(),
                 );
-                ui.painter().rect_filled(rect, 0.0_f32, Color32::WHITE);
-                let top = rect.top() + 8.0 - upper * GAP * scale;
-                let point = |x, level| {
-                    Pos2::new(
-                        rect.left() + (x - leftmost) * scale,
-                        top + level * GAP * scale,
-                    )
+                self.paint_row(ui, score, &layout, rect, scale, selected, fit_object)
+            })
+            .inner
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        score: &Score,
+        layout: &RowLayout,
+        rect: Rect,
+        scale: f32,
+        selected: Option<Selection>,
+        fit_object: bool,
+    ) -> Option<Selection> {
+        let RowLayout {
+            staff: staff_index,
+            items,
+            positioned,
+            measures,
+            time_signature,
+            key_count,
+            header_width,
+            upper,
+            lower,
+            lyric_top,
+            lyric_above,
+            measure_end,
+            staff_end,
+            leftmost,
+            natural_width,
+            ..
+        } = layout.clone();
+        let staff = &score.staves[staff_index];
+        let relative = |pitch| (staff.y_at_pitch(pitch) - staff.lines[0]) / staff.spacing();
+        let map_x = |source| layout.map_x(source, staff);
+        self.scale = scale;
+        let mut clicked = None;
+        ui.painter().rect_filled(rect, 0.0_f32, Color32::WHITE);
+        let padding = if layout.axis.is_some() {
+            8.0 * scale
+        } else {
+            8.0
+        };
+        let top = rect.top() + padding - upper * GAP * scale;
+        let point = |x, level| {
+            Pos2::new(
+                rect.left() + (x - leftmost) * scale,
+                top + level * GAP * scale,
+            )
+        };
+        let line = |from, to, thickness| {
+            crisp_line(ui, from, to, thickness * scale, Color32::BLACK);
+        };
+        for (index, measure) in measures.iter().enumerate() {
+            let x = measure
+                .barline
+                .and_then(|barline| {
+                    positioned.iter().find_map(|&(x, item)| {
+                        matches!(item, Item::Bar(index) if index == barline).then_some(x)
+                    })
+                })
+                .unwrap_or(measure_end);
+            let measure_left = positioned
+                .iter()
+                .find_map(|&(x, item)| match item {
+                    Item::Bar(index) if score.barlines[index].x == measure.left => Some(x),
+                    _ => None,
+                })
+                .unwrap_or(header_width - 16.0);
+            paint_measure_validity(
+                ui,
+                measure,
+                Rect::from_min_max(
+                    point((x - GAP * 1.8).max(measure_left), -0.3),
+                    point(x, 4.3),
+                ),
+                ui.id().with(("measure_validity", index)),
+            );
+        }
+        for level in 0..5 {
+            line(
+                point(12.0, level as f32),
+                point(staff_end, level as f32),
+                0.8_f32,
+            );
+        }
+        let clef = staff.header.clef;
+        if let Some(assignment) = score
+            .staff_assignments
+            .iter()
+            .find(|a| a.staff == staff_index)
+        {
+            ui.painter().text(
+                point(54.0, upper + 0.6),
+                egui::Align2::LEFT_CENTER,
+                &assignment.name,
+                egui::FontId::proportional(12.0 * scale),
+                Color32::DARK_GRAY,
+            );
+        }
+        if clef == Clef::Unknown {
+            ui.painter().text(
+                point(24.0, -2.5),
+                egui::Align2::CENTER_CENTER,
+                "?",
+                egui::FontId::proportional(12.0 * scale),
+                Color32::DARK_GRAY,
+            );
+        }
+        self.glyph(
+            ui,
+            if clef == Clef::Bass {
+                '\u{e062}'
+            } else {
+                '\u{e050}'
+            },
+            point(20.0, if clef == Clef::Bass { -0.1 } else { -1.0 }),
+            GAP * if clef == Clef::Bass { 3.6 } else { 6.0 },
+            Vec2::ZERO,
+            Color32::BLACK,
+        );
+        if clef == Clef::Treble8vb {
+            ui.painter().text(
+                point(28.0, 5.7),
+                egui::Align2::CENTER_CENTER,
+                "8",
+                egui::FontId::proportional(10.0 * scale),
+                Color32::BLACK,
+            );
+        }
+        if let Some(key) = staff.header.key_signature {
+            let order = if key.fifths >= 0 {
+                [38, 35, 39, 36, 33, 37, 34]
+            } else {
+                [34, 37, 33, 36, 32, 35, 31]
+            };
+            for (index, pitch) in order
+                .iter()
+                .take(usize::from(key.fifths.unsigned_abs().min(7)))
+                .enumerate()
+            {
+                let pitch = pitch
+                    - match clef {
+                        Clef::Bass => 14,
+                        Clef::Treble8vb => 7,
+                        _ => 0,
+                    };
+                let character = if key.fifths >= 0 {
+                    '\u{e262}'
+                } else {
+                    '\u{e260}'
                 };
-                let line = |from, to, thickness| {
-                    crisp_line(ui, from, to, thickness * scale, Color32::BLACK);
-                };
-                for (index, measure) in measures.iter().enumerate() {
-                    let x = measure
-                        .barline
-                        .and_then(|barline| {
-                            positioned.iter().find_map(|&(x, item)| {
-                                matches!(item, Item::Bar(index) if index == barline).then_some(x)
-                            })
-                        })
-                        .unwrap_or(measure_end);
-                    let measure_left = positioned
-                        .iter()
-                        .find_map(|&(x, item)| match item {
-                            Item::Bar(index) if score.barlines[index].x == measure.left => Some(x),
-                            _ => None,
-                        })
-                        .unwrap_or(header_width - 16.0);
-                    paint_measure_validity(
-                        ui,
-                        measure,
-                        Rect::from_min_max(
-                            point((x - GAP * 1.8).max(measure_left), -0.3),
-                            point(x, 4.3),
-                        ),
-                        ui.id().with(("measure_validity", index)),
-                    );
-                }
-                for level in 0..5 {
-                    line(
-                        point(12.0, level as f32),
-                        point(staff_end, level as f32),
-                        0.8_f32,
-                    );
-                }
-                let clef = staff.header.clef;
-                if clef == Clef::Unknown {
-                    ui.painter().text(
-                        point(24.0, -2.5),
-                        egui::Align2::CENTER_CENTER,
-                        "?",
-                        egui::FontId::proportional(12.0 * scale),
-                        Color32::DARK_GRAY,
-                    );
-                }
                 self.glyph(
                     ui,
-                    if clef == Clef::Bass {
-                        '\u{e062}'
-                    } else {
-                        '\u{e050}'
-                    },
-                    point(20.0, if clef == Clef::Bass { -0.1 } else { -1.0 }),
-                    GAP * if clef == Clef::Bass { 3.6 } else { 6.0 },
-                    Vec2::ZERO,
+                    character,
+                    point(54.0 + index as f32 * 9.0, relative(pitch)),
+                    notation_height(character),
+                    Vec2::new(0.0, if key.fifths >= 0 { 0.5 } else { 0.78 }),
                     Color32::BLACK,
                 );
-                if let Some(key) = staff.header.key_signature {
-                    let order = if key.fifths >= 0 {
-                        [38, 35, 39, 36, 33, 37, 34]
+            }
+        }
+        let time_x = 58.0 + f32::from(key_count) * 9.0;
+        if let Some(time) = time_signature {
+            self.paint_time_signature(ui, time, point(time_x, 2.0), scale, Color32::BLACK);
+        }
+
+        for (index, mark) in score
+            .repeat_marks
+            .iter()
+            .enumerate()
+            .filter(|(_, mark)| mark.staff == staff_index)
+        {
+            let color = if selected == Some(Selection::RepeatMark(index))
+                || self.selection.contains(&Selection::RepeatMark(index))
+            {
+                Color32::from_rgb(0, 95, 180)
+            } else {
+                Color32::BLACK
+            };
+            let map = |source: [f32; 2]| {
+                point(
+                    map_x(source[0]),
+                    (source[1] - staff.lines[0]) / staff.spacing(),
+                )
+            };
+            let at = map([mark.x, mark.y]);
+            let rect = if let Some(character) = mark.kind.glyph() {
+                let size = self.glyph(ui, character, at, GAP * 2.5, Vec2::splat(0.5), color);
+                Rect::from_center_size(at, size + Vec2::splat(8.0 * scale))
+            } else {
+                paint_ending(ui.painter(), mark, staff.spacing(), map, color, scale);
+                Rect::from_min_max(at, map([mark.end_x, mark.y + staff.spacing() * 1.4]))
+                    .expand(4.0 * scale)
+            };
+            if ui
+                .interact(rect, ui.id().with(("repeat_mark", index)), Sense::click())
+                .on_hover_text(mark.kind.label())
+                .clicked()
+            {
+                clicked = Some(Selection::RepeatMark(index));
+            }
+        }
+        for (index, dynamic) in score
+            .dynamics
+            .iter()
+            .enumerate()
+            .filter(|(_, dynamic)| dynamic.staff == staff_index)
+        {
+            let color = if selected == Some(Selection::Dynamic(index))
+                || self.selection.contains(&Selection::Dynamic(index))
+            {
+                Color32::from_rgb(0, 95, 180)
+            } else {
+                Color32::BLACK
+            };
+            let at = point(
+                map_x(dynamic.x),
+                (dynamic.y - staff.lines[0]) / staff.spacing(),
+            );
+            let size = self.glyph(
+                ui,
+                dynamic.kind.glyph(),
+                at,
+                notation_height(dynamic.kind.glyph()),
+                Vec2::splat(0.5),
+                color,
+            );
+            if ui
+                .interact(
+                    Rect::from_center_size(at, size + Vec2::splat(8.0 * scale)),
+                    ui.id().with(("dynamic", index)),
+                    Sense::click(),
+                )
+                .on_hover_text(i18n::format(
+                    "Dynamic {0}",
+                    &[("0", dynamic.kind.label().to_string())],
+                ))
+                .clicked()
+            {
+                clicked = Some(Selection::Dynamic(index));
+            }
+        }
+        for (index, span) in score
+            .spans
+            .iter()
+            .enumerate()
+            .filter(|(_, span)| span.staff == staff_index)
+        {
+            let map = |source: [f32; 2]| {
+                point(
+                    map_x(source[0]),
+                    (source[1] - staff.lines[0]) / staff.spacing(),
+                )
+            };
+            paint_span(
+                ui.painter(),
+                span,
+                |source| {
+                    point(
+                        map_x(source[0]),
+                        (source[1] - staff.lines[0]) / staff.spacing(),
+                    )
+                },
+                if selected == Some(Selection::Span(index))
+                    || self.selection.contains(&Selection::Span(index))
+                {
+                    Color32::from_rgb(0, 95, 180)
+                } else {
+                    Color32::BLACK
+                },
+                1.3 * scale,
+            );
+            if !fit_object && let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) {
+                let nearby = (0..=48).any(|sample| {
+                    let fraction = sample as f32 / 48.0;
+                    let source = if matches!(span.kind, SpanKind::Slur | SpanKind::Tie) {
+                        span.curve_point(fraction)
                     } else {
-                        [34, 37, 33, 36, 32, 35, 31]
+                        [
+                            span.start[0] + (span.end[0] - span.start[0]) * fraction,
+                            span.start[1] + (span.end[1] - span.start[1]) * fraction,
+                        ]
                     };
-                    for (index, pitch) in order
-                        .iter()
-                        .take(usize::from(key.fifths.unsigned_abs().min(7)))
-                        .enumerate()
+                    map(source).distance(pointer) <= 8.0
+                });
+                if nearby
+                    && ui
+                        .interact(
+                            Rect::from_center_size(pointer, Vec2::splat(16.0)),
+                            ui.id().with(("span", index)),
+                            Sense::click(),
+                        )
+                        .on_hover_text(span.kind.label())
+                        .clicked()
+                {
+                    clicked = Some(Selection::Span(index));
+                }
+            }
+        }
+        for &(x, item) in &positioned {
+            match item {
+                Item::Note(index) => {
+                    let note = &score.notes[index];
+                    let note_scale = note.notation_scale();
+                    let level = relative(note.pitch);
+                    let at = point(x, level);
+                    let color = if selected == Some(Selection::Note(index))
+                        || self.selection.contains(&Selection::Note(index))
                     {
-                        let pitch = pitch - if clef == Clef::Bass { 14 } else { 0 };
-                        let character = if key.fifths >= 0 {
-                            '\u{e262}'
-                        } else {
-                            '\u{e260}'
+                        Color32::from_rgb(0, 95, 180)
+                    } else {
+                        Color32::BLACK
+                    };
+                    for ledger in 1..=(-level).floor().max(0.0) as i32 {
+                        line(
+                            point(x - 11.0, -ledger as f32),
+                            point(x + 11.0, -ledger as f32),
+                            0.8_f32,
+                        );
+                    }
+                    for ledger in 1..=(level - 4.0).floor().max(0.0) as i32 {
+                        line(
+                            point(x - 11.0, 4.0 + ledger as f32),
+                            point(x + 11.0, 4.0 + ledger as f32),
+                            0.8_f32,
+                        );
+                    }
+                    if note.accidental_explicit {
+                        let character = match note.accidental {
+                            -1 => '\u{e260}',
+                            1 => '\u{e262}',
+                            _ => '\u{e261}',
                         };
                         self.glyph(
                             ui,
                             character,
-                            point(54.0 + index as f32 * 9.0, relative(pitch)),
-                            notation_height(character),
-                            Vec2::new(0.0, if key.fifths >= 0 { 0.5 } else { 0.78 }),
-                            Color32::BLACK,
+                            at - Vec2::new(13.0 * scale * note_scale, 0.0),
+                            notation_height(character) * note_scale,
+                            Vec2::new(1.0, if note.accidental == -1 { 0.78 } else { 0.5 }),
+                            color,
                         );
                     }
-                }
-                let time_x = 58.0 + f32::from(key_count) * 9.0;
-                if let Some(time) = time_signature {
-                    self.paint_time_signature(ui, time, point(time_x, 2.0), scale, Color32::BLACK);
-                }
-
-                for (index, mark) in score
-                    .repeat_marks
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, mark)| mark.staff == staff_index)
-                {
-                    let color = if selected == Some(Selection::RepeatMark(index)) {
-                        Color32::from_rgb(0, 95, 180)
-                    } else {
-                        Color32::BLACK
+                    let character = match note.duration {
+                        Duration::Whole => '\u{e0a2}',
+                        Duration::Half => '\u{e0a3}',
+                        _ => '\u{e0a4}',
                     };
-                    let map = |source: [f32; 2]| {
-                        point(
-                            map_x(source[0]),
-                            (source[1] - staff.lines[0]) / staff.spacing(),
-                        )
-                    };
-                    let at = map([mark.x, mark.y]);
-                    let rect = if let Some(character) = mark.kind.glyph() {
-                        let size =
-                            self.glyph(ui, character, at, GAP * 2.5, Vec2::splat(0.5), color);
-                        Rect::from_center_size(at, size + Vec2::splat(8.0 * scale))
-                    } else {
-                        paint_ending(ui.painter(), mark, staff.spacing(), map, color, scale);
-                        Rect::from_min_max(at, map([mark.end_x, mark.y + staff.spacing() * 1.4]))
-                            .expand(4.0 * scale)
-                    };
-                    if ui
-                        .interact(rect, ui.id().with(("repeat_mark", index)), Sense::click())
-                        .on_hover_text(mark.kind.label())
-                        .clicked()
-                    {
-                        clicked = Some(Selection::RepeatMark(index));
-                    }
-                }
-                for (index, dynamic) in score
-                    .dynamics
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, dynamic)| dynamic.staff == staff_index)
-                {
-                    let color = if selected == Some(Selection::Dynamic(index)) {
-                        Color32::from_rgb(0, 95, 180)
-                    } else {
-                        Color32::BLACK
-                    };
-                    let at = point(
-                        map_x(dynamic.x),
-                        (dynamic.y - staff.lines[0]) / staff.spacing(),
-                    );
                     let size = self.glyph(
                         ui,
-                        dynamic.kind.glyph(),
+                        character,
                         at,
-                        notation_height(dynamic.kind.glyph()),
+                        notation_height(character) * note_scale,
                         Vec2::splat(0.5),
                         color,
                     );
-                    if ui
-                        .interact(
-                            Rect::from_center_size(at, size + Vec2::splat(8.0 * scale)),
-                            ui.id().with(("dynamic", index)),
-                            Sense::click(),
-                        )
-                        .on_hover_text(i18n::format(
-                            "Dynamic {0}",
-                            &[("0", dynamic.kind.label().to_string())],
-                        ))
-                        .clicked()
-                    {
-                        clicked = Some(Selection::Dynamic(index));
-                    }
-                }
-                for (index, span) in score
-                    .spans
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, span)| span.staff == staff_index)
-                {
-                    let map = |source: [f32; 2]| {
-                        point(
-                            map_x(source[0]),
-                            (source[1] - staff.lines[0]) / staff.spacing(),
-                        )
+                    let polyphonic = score
+                        .notes
+                        .iter()
+                        .any(|n| n.staff == note.staff && n.voice > 1)
+                        || score
+                            .rests
+                            .iter()
+                            .any(|r| r.staff == note.staff && r.voice > 1);
+                    let down = if polyphonic {
+                        note.voice.is_multiple_of(2)
+                    } else {
+                        level <= 2.0
                     };
-                    paint_span(
-                        ui.painter(),
-                        span,
-                        |source| {
-                            point(
-                                map_x(source[0]),
-                                (source[1] - staff.lines[0]) / staff.spacing(),
-                            )
-                        },
-                        if selected == Some(Selection::Span(index)) {
-                            Color32::from_rgb(0, 95, 180)
-                        } else {
-                            Color32::BLACK
-                        },
-                        1.3 * scale,
-                    );
-                    if !fit_object
-                        && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
-                    {
-                        let nearby = (0..=48).any(|sample| {
-                            let fraction = sample as f32 / 48.0;
-                            let source = if matches!(span.kind, SpanKind::Slur | SpanKind::Tie) {
-                                span.curve_point(fraction)
+                    let stem_length = GAP
+                        * note_scale
+                        * (3.3 + note.duration.flag_count().saturating_sub(2) as f32 * 0.5);
+                    let tip = at
+                        + Vec2::new(
+                            if down { -size.x * 0.45 } else { size.x * 0.45 },
+                            if down {
+                                stem_length * scale
                             } else {
-                                [
-                                    span.start[0] + (span.end[0] - span.start[0]) * fraction,
-                                    span.start[1] + (span.end[1] - span.start[1]) * fraction,
-                                ]
-                            };
-                            map(source).distance(pointer) <= 8.0
-                        });
-                        if nearby
-                            && ui
-                                .interact(
-                                    Rect::from_center_size(pointer, Vec2::splat(16.0)),
-                                    ui.id().with(("span", index)),
-                                    Sense::click(),
-                                )
-                                .on_hover_text(span.kind.label())
-                                .clicked()
-                        {
-                            clicked = Some(Selection::Span(index));
-                        }
+                                -stem_length * scale
+                            },
+                        );
+                    if note.duration != Duration::Whole {
+                        crisp_line(
+                            ui,
+                            Pos2::new(tip.x, at.y),
+                            tip,
+                            GAP * 0.12 * scale * note_scale,
+                            color,
+                        );
                     }
-                }
-                for &(x, item) in &positioned {
-                    match item {
-                        Item::Note(index) => {
-                            let note = &score.notes[index];
-                            let note_scale = note.notation_scale();
-                            let level = relative(note.pitch);
-                            let at = point(x, level);
-                            let color = if selected == Some(Selection::Note(index)) {
-                                Color32::from_rgb(0, 95, 180)
-                            } else {
-                                Color32::BLACK
-                            };
-                            for ledger in 1..=(-level).floor().max(0.0) as i32 {
-                                line(
-                                    point(x - 11.0, -ledger as f32),
-                                    point(x + 11.0, -ledger as f32),
-                                    0.8_f32,
-                                );
-                            }
-                            for ledger in 1..=(level - 4.0).floor().max(0.0) as i32 {
-                                line(
-                                    point(x - 11.0, 4.0 + ledger as f32),
-                                    point(x + 11.0, 4.0 + ledger as f32),
-                                    0.8_f32,
-                                );
-                            }
-                            if note.accidental_explicit {
-                                let character = match note.accidental {
-                                    -1 => '\u{e260}',
-                                    1 => '\u{e262}',
-                                    _ => '\u{e261}',
-                                };
-                                self.glyph(
-                                    ui,
-                                    character,
-                                    at - Vec2::new(13.0 * scale * note_scale, 0.0),
-                                    notation_height(character) * note_scale,
-                                    Vec2::new(1.0, if note.accidental == -1 { 0.78 } else { 0.5 }),
-                                    color,
-                                );
-                            }
-                            let character = match note.duration {
-                                Duration::Whole => '\u{e0a2}',
-                                Duration::Half => '\u{e0a3}',
-                                _ => '\u{e0a4}',
-                            };
-                            let size = self.glyph(
+                    if note.duration.flag_count() > 0 {
+                        let character = char::from_u32(
+                            0xe240 + (note.duration.flag_count() as u32 - 1) * 2 + u32::from(down),
+                        )
+                        .unwrap();
+                        self.glyph(
+                            ui,
+                            character,
+                            tip,
+                            notation_height(character) * note_scale,
+                            Vec2::ZERO,
+                            color,
+                        );
+                    }
+                    for dot in 0..note.dots.min(2) {
+                        let dot_level = if (level - level.round()).abs() < 0.1 {
+                            level - 0.5
+                        } else {
+                            level
+                        };
+                        ui.painter().circle_filled(
+                            point(
+                                x + size.x / (2.0 * scale) + 6.0 + f32::from(dot) * 6.0,
+                                dot_level,
+                            ),
+                            1.7 * scale * note_scale,
+                            color,
+                        );
+                    }
+                    if let Some(ratio) = note.tuplet_ratio() {
+                        ui.painter().text(
+                            point(x, level - 4.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            ratio.actual.to_string(),
+                            egui::FontId::proportional(12.0 * scale),
+                            color,
+                        );
+                    }
+                    let mark = point(x, if down { level - 1.2 } else { level + 1.2 });
+                    match note.articulation {
+                        Articulation::None => {}
+                        Articulation::Staccato => {
+                            ui.painter().circle_filled(mark, 1.8 * scale, color);
+                        }
+                        Articulation::Tenuto => {
+                            ui.painter().line_segment(
+                                [
+                                    mark - Vec2::new(4.0, 0.0) * scale,
+                                    mark + Vec2::new(4.0, 0.0) * scale,
+                                ],
+                                Stroke::new(1.2 * scale, color),
+                            );
+                        }
+                        Articulation::Accent => {
+                            ui.painter().line_segment(
+                                [
+                                    mark - Vec2::new(4.0, 3.0) * scale,
+                                    mark + Vec2::new(4.0, 0.0) * scale,
+                                ],
+                                Stroke::new(1.2 * scale, color),
+                            );
+                            ui.painter().line_segment(
+                                [
+                                    mark + Vec2::new(4.0, 0.0) * scale,
+                                    mark + Vec2::new(-4.0, 3.0) * scale,
+                                ],
+                                Stroke::new(1.2 * scale, color),
+                            );
+                        }
+                        Articulation::Marcato
+                        | Articulation::Staccatissimo
+                        | Articulation::Portato
+                        | Articulation::AccentStaccato
+                        | Articulation::TenutoAccent
+                        | Articulation::MarcatoStaccato => {
+                            let character = note.articulation.glyph(!down).unwrap();
+                            self.glyph(
                                 ui,
                                 character,
-                                at,
+                                mark,
                                 notation_height(character) * note_scale,
                                 Vec2::splat(0.5),
                                 color,
                             );
-                            let down = level <= 2.0;
-                            let stem_length = GAP
-                                * note_scale
-                                * (3.3 + note.duration.flag_count().saturating_sub(2) as f32 * 0.5);
-                            let tip = at
-                                + Vec2::new(
-                                    if down { -size.x * 0.45 } else { size.x * 0.45 },
-                                    if down {
-                                        stem_length * scale
-                                    } else {
-                                        -stem_length * scale
-                                    },
-                                );
-                            if note.duration != Duration::Whole {
-                                crisp_line(
-                                    ui,
-                                    Pos2::new(tip.x, at.y),
-                                    tip,
-                                    GAP * 0.12 * scale * note_scale,
-                                    color,
-                                );
-                            }
-                            if note.duration.flag_count() > 0 {
-                                let character = char::from_u32(
-                                    0xe240
-                                        + (note.duration.flag_count() as u32 - 1) * 2
-                                        + u32::from(down),
-                                )
-                                .unwrap();
-                                self.glyph(
-                                    ui,
-                                    character,
-                                    tip,
-                                    notation_height(character) * note_scale,
-                                    Vec2::ZERO,
-                                    color,
-                                );
-                            }
-                            for dot in 0..note.dots.min(2) {
-                                let dot_level = if (level - level.round()).abs() < 0.1 {
-                                    level - 0.5
-                                } else {
-                                    level
-                                };
-                                ui.painter().circle_filled(
-                                    point(
-                                        x + size.x / (2.0 * scale) + 6.0 + f32::from(dot) * 6.0,
-                                        dot_level,
-                                    ),
-                                    1.7 * scale * note_scale,
-                                    color,
-                                );
-                            }
-                            if let Some(ratio) = note.tuplet_ratio() {
-                                ui.painter().text(
-                                    point(x, level - 4.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    ratio.actual.to_string(),
-                                    egui::FontId::proportional(12.0 * scale),
-                                    color,
-                                );
-                            }
-                            let mark = point(x, if down { level - 1.2 } else { level + 1.2 });
-                            match note.articulation {
-                                Articulation::None => {}
-                                Articulation::Staccato => {
-                                    ui.painter().circle_filled(mark, 1.8 * scale, color);
-                                }
-                                Articulation::Tenuto => {
-                                    ui.painter().line_segment(
-                                        [
-                                            mark - Vec2::new(4.0, 0.0) * scale,
-                                            mark + Vec2::new(4.0, 0.0) * scale,
-                                        ],
-                                        Stroke::new(1.2 * scale, color),
-                                    );
-                                }
-                                Articulation::Accent => {
-                                    ui.painter().line_segment(
-                                        [
-                                            mark - Vec2::new(4.0, 3.0) * scale,
-                                            mark + Vec2::new(4.0, 0.0) * scale,
-                                        ],
-                                        Stroke::new(1.2 * scale, color),
-                                    );
-                                    ui.painter().line_segment(
-                                        [
-                                            mark + Vec2::new(4.0, 0.0) * scale,
-                                            mark + Vec2::new(-4.0, 3.0) * scale,
-                                        ],
-                                        Stroke::new(1.2 * scale, color),
-                                    );
-                                }
-                                Articulation::Marcato
-                                | Articulation::Staccatissimo
-                                | Articulation::Portato
-                                | Articulation::AccentStaccato
-                                | Articulation::TenutoAccent
-                                | Articulation::MarcatoStaccato => {
-                                    let character = note.articulation.glyph(!down).unwrap();
-                                    self.glyph(
-                                        ui,
-                                        character,
-                                        mark,
-                                        notation_height(character) * note_scale,
-                                        Vec2::splat(0.5),
-                                        color,
-                                    );
-                                }
-                                Articulation::Fermata => {
-                                    self.glyph(
-                                        ui,
-                                        '\u{e4c0}',
-                                        point(x, level - 1.5),
-                                        GAP * 1.2,
-                                        Vec2::new(0.5, 1.0),
-                                        color,
-                                    );
-                                }
-                            }
-                            if ui
-                                .interact(
-                                    Rect::from_center_size(at, Vec2::splat(24.0 * scale)),
-                                    ui.id().with(("note", index)),
-                                    Sense::click(),
-                                )
-                                .on_hover_text(format!(
-                                    "{}  {}",
-                                    note.pitch_label(),
-                                    note.duration_label()
-                                ))
-                                .clicked()
-                            {
-                                clicked = Some(Selection::Note(index));
-                            }
                         }
-                        Item::Rest(index) => {
-                            let rest = &score.rests[index];
-                            let color = if selected == Some(Selection::Rest(index)) {
-                                Color32::from_rgb(0, 95, 180)
-                            } else {
-                                Color32::BLACK
-                            };
-                            if let Some(count) = rest.measures {
-                                ui.painter().line_segment(
-                                    [point(x - 30.0, 2.0), point(x + 30.0, 2.0)],
-                                    Stroke::new(5.0 * scale, color),
-                                );
-                                for edge in [-30.0, 30.0] {
-                                    ui.painter().line_segment(
-                                        [point(x + edge, 1.0), point(x + edge, 3.0)],
-                                        Stroke::new(1.4 * scale, color),
-                                    );
-                                }
-                                ui.painter().text(
-                                    point(x, -0.6),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    count.to_string(),
-                                    egui::FontId::proportional(20.0 * scale),
-                                    color,
-                                );
-                            } else {
-                                let (character, height, level, anchor) = match rest.duration {
-                                    Duration::Whole => ('\u{e4e3}', 0.5, 1.0, 0.0),
-                                    Duration::Half => ('\u{e4e4}', 0.5, 2.0, 1.0),
-                                    Duration::Quarter => ('\u{e4e5}', 2.8, 2.0, 0.5),
-                                    Duration::Eighth => ('\u{e4e6}', 1.8, 2.0, 0.5),
-                                    Duration::Sixteenth => ('\u{e4e7}', 2.8, 2.0, 0.5),
-                                    Duration::ThirtySecond => ('\u{e4e8}', 3.8, 2.0, 0.5),
-                                    Duration::SixtyFourth => ('\u{e4e9}', 4.8, 2.0, 0.5),
-                                };
-                                let size = self.glyph(
-                                    ui,
-                                    character,
-                                    point(x, level),
-                                    GAP * height,
-                                    Vec2::new(0.5, anchor),
-                                    color,
-                                );
-                                for dot in 0..rest.dots.min(2) {
-                                    ui.painter().circle_filled(
-                                        point(
-                                            x + size.x / (2.0 * scale) + 6.0 + f32::from(dot) * 6.0,
-                                            1.5,
-                                        ),
-                                        1.7 * scale,
-                                        color,
-                                    );
-                                }
-                            }
-                            if ui
-                                .interact(
-                                    Rect::from_center_size(
-                                        point(x, 2.0),
-                                        Vec2::new(item.width(score), GAP * 3.0) * scale,
-                                    ),
-                                    ui.id().with(("rest", index)),
-                                    Sense::click(),
-                                )
-                                .on_hover_text(i18n::format(
-                                    "Rest {0}",
-                                    &[("0", rest.duration_label().to_string())],
-                                ))
-                                .clicked()
-                            {
-                                clicked = Some(Selection::Rest(index));
-                            }
-                        }
-                        Item::TimeChange(index) => {
-                            let color = if selected == Some(Selection::TimeChange(index)) {
-                                Color32::from_rgb(0, 95, 180)
-                            } else {
-                                Color32::BLACK
-                            };
-                            self.paint_time_signature(
+                        Articulation::Fermata => {
+                            self.glyph(
                                 ui,
-                                score.time_changes[index].time_signature,
-                                point(x - item.width(score) * 0.5 + 12.0, 2.0),
-                                scale,
+                                '\u{e4c0}',
+                                point(x, level - 1.5),
+                                GAP * 1.2,
+                                Vec2::new(0.5, 1.0),
                                 color,
                             );
-                            if ui
-                                .interact(
-                                    Rect::from_center_size(
-                                        point(x, 2.0),
-                                        Vec2::new(item.width(score), GAP * 5.0) * scale,
-                                    ),
-                                    ui.id().with(("time_change", index)),
-                                    Sense::click(),
-                                )
-                                .on_hover_text(i18n::format(
-                                    "Time change {0}",
-                                    &[(
-                                        "0",
-                                        score.time_changes[index]
-                                            .time_signature
-                                            .label()
-                                            .to_string(),
-                                    )],
-                                ))
-                                .clicked()
-                            {
-                                clicked = Some(Selection::TimeChange(index));
-                            }
                         }
-                        Item::KeyChange(index) => {
-                            let color = if selected == Some(Selection::KeyChange(index)) {
-                                Color32::from_rgb(0, 95, 180)
-                            } else {
-                                Color32::BLACK
-                            };
-                            for (ordinal, (character, pitch)) in
-                                key_change_symbols(score, index).into_iter().enumerate()
-                            {
-                                self.glyph(
-                                    ui,
-                                    character,
-                                    point(
-                                        x - item.width(score) * 0.5 + 12.0 + ordinal as f32 * 9.0,
-                                        relative(pitch - if clef == Clef::Bass { 14 } else { 0 }),
-                                    ),
-                                    notation_height(character),
-                                    Vec2::new(
-                                        0.0,
-                                        if character == '\u{e260}' { 0.78 } else { 0.5 },
-                                    ),
-                                    color,
+                    }
+                    if ui
+                        .interact(
+                            Rect::from_center_size(at, Vec2::splat(24.0 * scale)),
+                            ui.id().with(("note", index)),
+                            Sense::click(),
+                        )
+                        .on_hover_text(format!("{}  {}", note.pitch_label(), note.duration_label()))
+                        .clicked()
+                    {
+                        clicked = Some(Selection::Note(index));
+                    }
+                }
+                Item::Rest(index) => {
+                    let rest = &score.rests[index];
+                    let color = if selected == Some(Selection::Rest(index))
+                        || self.selection.contains(&Selection::Rest(index))
+                    {
+                        Color32::from_rgb(0, 95, 180)
+                    } else {
+                        Color32::BLACK
+                    };
+                    if let Some(count) = rest.measures {
+                        ui.painter().line_segment(
+                            [point(x - 30.0, 2.0), point(x + 30.0, 2.0)],
+                            Stroke::new(5.0 * scale, color),
+                        );
+                        for edge in [-30.0, 30.0] {
+                            ui.painter().line_segment(
+                                [point(x + edge, 1.0), point(x + edge, 3.0)],
+                                Stroke::new(1.4 * scale, color),
+                            );
+                        }
+                        ui.painter().text(
+                            point(x, -0.6),
+                            egui::Align2::CENTER_BOTTOM,
+                            count.to_string(),
+                            egui::FontId::proportional(20.0 * scale),
+                            color,
+                        );
+                    } else {
+                        let (character, height, level, anchor) = match rest.duration {
+                            Duration::Whole => ('\u{e4e3}', 0.5, 1.0, 0.0),
+                            Duration::Half => ('\u{e4e4}', 0.5, 2.0, 1.0),
+                            Duration::Quarter => ('\u{e4e5}', 2.8, 2.0, 0.5),
+                            Duration::Eighth => ('\u{e4e6}', 1.8, 2.0, 0.5),
+                            Duration::Sixteenth => ('\u{e4e7}', 2.8, 2.0, 0.5),
+                            Duration::ThirtySecond => ('\u{e4e8}', 3.8, 2.0, 0.5),
+                            Duration::SixtyFourth => ('\u{e4e9}', 4.8, 2.0, 0.5),
+                        };
+                        let size = self.glyph(
+                            ui,
+                            character,
+                            point(x, level),
+                            GAP * height,
+                            Vec2::new(0.5, anchor),
+                            color,
+                        );
+                        for dot in 0..rest.dots.min(2) {
+                            ui.painter().circle_filled(
+                                point(x + size.x / (2.0 * scale) + 6.0 + f32::from(dot) * 6.0, 1.5),
+                                1.7 * scale,
+                                color,
+                            );
+                        }
+                    }
+                    if ui
+                        .interact(
+                            Rect::from_center_size(
+                                point(x, 2.0),
+                                Vec2::new(item.width(score), GAP * 3.0) * scale,
+                            ),
+                            ui.id().with(("rest", index)),
+                            Sense::click(),
+                        )
+                        .on_hover_text(i18n::format(
+                            "Rest {0}",
+                            &[("0", rest.duration_label().to_string())],
+                        ))
+                        .clicked()
+                    {
+                        clicked = Some(Selection::Rest(index));
+                    }
+                }
+                Item::TimeChange(index) => {
+                    let color = if selected == Some(Selection::TimeChange(index))
+                        || self.selection.contains(&Selection::TimeChange(index))
+                    {
+                        Color32::from_rgb(0, 95, 180)
+                    } else {
+                        Color32::BLACK
+                    };
+                    self.paint_time_signature(
+                        ui,
+                        score.time_changes[index].time_signature,
+                        point(x - item.width(score) * 0.5 + 12.0, 2.0),
+                        scale,
+                        color,
+                    );
+                    if ui
+                        .interact(
+                            Rect::from_center_size(
+                                point(x, 2.0),
+                                Vec2::new(item.width(score), GAP * 5.0) * scale,
+                            ),
+                            ui.id().with(("time_change", index)),
+                            Sense::click(),
+                        )
+                        .on_hover_text(i18n::format(
+                            "Time change {0}",
+                            &[(
+                                "0",
+                                score.time_changes[index].time_signature.label().to_string(),
+                            )],
+                        ))
+                        .clicked()
+                    {
+                        clicked = Some(Selection::TimeChange(index));
+                    }
+                }
+                Item::KeyChange(index) => {
+                    let color = if selected == Some(Selection::KeyChange(index))
+                        || self.selection.contains(&Selection::KeyChange(index))
+                    {
+                        Color32::from_rgb(0, 95, 180)
+                    } else {
+                        Color32::BLACK
+                    };
+                    for (ordinal, (character, pitch)) in
+                        key_change_symbols(score, index).into_iter().enumerate()
+                    {
+                        self.glyph(
+                            ui,
+                            character,
+                            point(
+                                x - item.width(score) * 0.5 + 12.0 + ordinal as f32 * 9.0,
+                                relative(
+                                    pitch
+                                        - match clef {
+                                            Clef::Bass => 14,
+                                            Clef::Treble8vb => 7,
+                                            _ => 0,
+                                        },
+                                ),
+                            ),
+                            notation_height(character),
+                            Vec2::new(0.0, if character == '\u{e260}' { 0.78 } else { 0.5 }),
+                            color,
+                        );
+                    }
+                    if ui
+                        .interact(
+                            Rect::from_center_size(
+                                point(x, 2.0),
+                                Vec2::new(item.width(score), GAP * 7.0) * scale,
+                            ),
+                            ui.id().with(("key_change", index)),
+                            Sense::click(),
+                        )
+                        .on_hover_text(i18n::format(
+                            "Key change {0}",
+                            &[(
+                                "0",
+                                score.key_changes[index].key_signature.label().to_string(),
+                            )],
+                        ))
+                        .clicked()
+                    {
+                        clicked = Some(Selection::KeyChange(index));
+                    }
+                }
+                Item::Bar(index) => {
+                    let kind = score.barlines[index].kind;
+                    let strokes: &[(f32, f32)] = match kind {
+                        BarlineKind::Single => &[(0.0, 1.0)],
+                        BarlineKind::Double => &[(-3.0, 1.0), (3.0, 1.0)],
+                        BarlineKind::Final | BarlineKind::RepeatEnd => &[(-4.0, 1.0), (3.0, 3.5)],
+                        BarlineKind::RepeatStart => &[(-3.0, 3.5), (4.0, 1.0)],
+                        BarlineKind::RepeatBoth => &[(-4.0, 1.0), (0.0, 3.5), (4.0, 1.0)],
+                    };
+                    for &(offset, thickness) in strokes {
+                        line(point(x + offset, 0.0), point(x + offset, 4.0), thickness);
+                    }
+                    for side in [-1.0, 1.0] {
+                        if kind == BarlineKind::RepeatBoth
+                            || (side < 0.0 && kind == BarlineKind::RepeatEnd)
+                            || (side > 0.0 && kind == BarlineKind::RepeatStart)
+                        {
+                            for level in [1.5, 2.5] {
+                                ui.painter().circle_filled(
+                                    point(x + side * 10.0, level),
+                                    1.8 * scale,
+                                    Color32::BLACK,
                                 );
                             }
-                            if ui
-                                .interact(
-                                    Rect::from_center_size(
-                                        point(x, 2.0),
-                                        Vec2::new(item.width(score), GAP * 7.0) * scale,
-                                    ),
-                                    ui.id().with(("key_change", index)),
-                                    Sense::click(),
-                                )
-                                .on_hover_text(i18n::format(
-                                    "Key change {0}",
-                                    &[(
-                                        "0",
-                                        score.key_changes[index].key_signature.label().to_string(),
-                                    )],
-                                ))
-                                .clicked()
-                            {
-                                clicked = Some(Selection::KeyChange(index));
-                            }
-                        }
-                        Item::Bar(index) => {
-                            let kind = score.barlines[index].kind;
-                            let strokes: &[(f32, f32)] = match kind {
-                                BarlineKind::Single => &[(0.0, 1.0)],
-                                BarlineKind::Double => &[(-3.0, 1.0), (3.0, 1.0)],
-                                BarlineKind::Final | BarlineKind::RepeatEnd => {
-                                    &[(-4.0, 1.0), (3.0, 3.5)]
-                                }
-                                BarlineKind::RepeatStart => &[(-3.0, 3.5), (4.0, 1.0)],
-                                BarlineKind::RepeatBoth => &[(-4.0, 1.0), (0.0, 3.5), (4.0, 1.0)],
-                            };
-                            for &(offset, thickness) in strokes {
-                                line(point(x + offset, 0.0), point(x + offset, 4.0), thickness);
-                            }
-                            for side in [-1.0, 1.0] {
-                                if kind == BarlineKind::RepeatBoth
-                                    || (side < 0.0 && kind == BarlineKind::RepeatEnd)
-                                    || (side > 0.0 && kind == BarlineKind::RepeatStart)
-                                {
-                                    for level in [1.5, 2.5] {
-                                        ui.painter().circle_filled(
-                                            point(x + side * 10.0, level),
-                                            1.8 * scale,
-                                            Color32::BLACK,
-                                        );
-                                    }
-                                }
-                            }
                         }
                     }
                 }
-                if !fit_object {
-                    for (index, span) in score
-                        .spans
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, span)| span.staff == staff_index)
+            }
+        }
+        for lyric in score
+            .lyrics
+            .iter()
+            .filter(|l| score.notes[l.note].staff == staff_index)
+        {
+            let Some(&(x, _)) = positioned
+                .iter()
+                .find(|(_, item)| matches!(item, Item::Note(index) if *index == lyric.note))
+            else {
+                continue;
+            };
+            let lyric_y = if lyric.placement == libreomr::model::LyricPlacement::Above {
+                lyric_above
+            } else {
+                lyric_top
+            } + f32::from(lyric.verse - 1) * 1.8;
+            let label = ui.painter().text(
+                point(x, lyric_y),
+                egui::Align2::CENTER_CENTER,
+                &lyric.text,
+                egui::FontId::proportional(13.0 * scale),
+                if selected == Some(Selection::Note(lyric.note))
+                    || self.selection.contains(&Selection::Note(lyric.note))
+                {
+                    Color32::from_rgb(0, 95, 180)
+                } else {
+                    Color32::BLACK
+                },
+            );
+            if let Some(number) = &lyric.verse_label {
+                ui.painter().text(
+                    Pos2::new(label.left() - 6.0 * scale, label.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    number,
+                    egui::FontId::proportional(13.0 * scale),
+                    Color32::BLACK,
+                );
+            }
+            if ui
+                .interact(
+                    label.expand(2.0),
+                    ui.id()
+                        .with(("lyric", lyric.note, lyric.verse, lyric.placement)),
+                    Sense::click(),
+                )
+                .clicked()
+            {
+                clicked = Some(Selection::Note(lyric.note));
+            }
+            let next = score
+                .lyrics
+                .iter()
+                .filter(|other| {
+                    other.verse == lyric.verse
+                        && other.placement == lyric.placement
+                        && score.notes[other.note].staff == staff_index
+                        && score.notes[other.note].x > score.notes[lyric.note].x
+                })
+                .min_by(|a, b| score.notes[a.note].x.total_cmp(&score.notes[b.note].x));
+            let end = next.map_or(x + 24.0, |next| map_x(score.notes[next.note].x));
+            if matches!(
+                lyric.syllabic,
+                libreomr::model::Syllabic::Begin | libreomr::model::Syllabic::Middle
+            ) {
+                ui.painter().text(
+                    point((x + end) * 0.5, lyric_y),
+                    egui::Align2::CENTER_CENTER,
+                    "-",
+                    egui::FontId::proportional(13.0 * scale),
+                    Color32::BLACK,
+                );
+            }
+            if lyric.extend {
+                let y = lyric_y + 0.6;
+                line(point(x + 14.0, y), point(end - 8.0, y), 0.6);
+            }
+        }
+        if !fit_object {
+            for (index, span) in score
+                .spans
+                .iter()
+                .enumerate()
+                .filter(|(_, span)| span.staff == staff_index)
+            {
+                for (right, source) in [(false, span.start), (true, span.end)] {
+                    let center = point(
+                        map_x(source[0]),
+                        (source[1] - staff.lines[0]) / staff.spacing(),
+                    );
+                    let active = selected == Some(Selection::Span(index))
+                        || self.selection.contains(&Selection::Span(index));
+                    let color = if active {
+                        Color32::from_rgb(0, 95, 180)
+                    } else {
+                        Color32::GRAY
+                    };
+                    let radius = if active { 6.0 } else { 4.0 };
+                    if layout.axis.is_none()
+                        || active
+                        || ui.rect_contains_pointer(Rect::from_center_size(
+                            center,
+                            Vec2::splat(20.0),
+                        ))
                     {
-                        for (right, source) in [(false, span.start), (true, span.end)] {
-                            let center = point(
-                                map_x(source[0]),
-                                (source[1] - staff.lines[0]) / staff.spacing(),
-                            );
-                            let active = selected == Some(Selection::Span(index));
-                            let color = if active {
-                                Color32::from_rgb(0, 95, 180)
-                            } else {
-                                Color32::GRAY
-                            };
-                            let radius = if active { 6.0 } else { 4.0 };
-                            ui.painter().circle_filled(center, radius, Color32::WHITE);
-                            ui.painter()
-                                .circle_stroke(center, radius, Stroke::new(1.5_f32, color));
-                            let response = ui
-                                .interact(
-                                    Rect::from_center_size(center, Vec2::splat(20.0)),
-                                    ui.id().with(("span_anchor", index, right)),
-                                    Sense::click_and_drag(),
-                                )
-                                .on_hover_cursor(egui::CursorIcon::Grab)
-                                .on_hover_text(if right {
-                                    i18n::tr("Drag end anchor")
-                                } else {
-                                    i18n::tr("Drag start anchor")
-                                });
-                            if response.clicked() {
-                                clicked = Some(Selection::Span(index));
-                            }
-                            if response.drag_started() {
-                                let mut x_positions = vec![];
-                                for x in std::iter::once(staff.left)
-                                    .chain(items.iter().map(|item| item.0))
-                                    .chain(std::iter::once(staff.right))
-                                {
-                                    let screen = point(map_x(x), 0.0).x;
-                                    if x_positions
-                                        .last()
-                                        .is_none_or(|&(previous, _)| screen > previous + 0.001)
-                                    {
-                                        x_positions.push((screen, x));
-                                    }
-                                }
-                                if x_positions.len() < 2 {
-                                    x_positions = vec![
-                                        (center.x - GAP * scale, source[0] - staff.spacing()),
-                                        (center.x + GAP * scale, source[0] + staff.spacing()),
-                                    ];
-                                }
-                                self.anchor_drag = Some(AnchorDrag {
-                                    index,
-                                    right,
-                                    source,
-                                    screen: center,
-                                    source_per_y: staff.spacing() / (GAP * scale),
-                                    delta: Vec2::ZERO,
-                                    x_positions,
-                                    upper,
-                                    lower,
-                                    leftmost,
-                                    natural_width,
-                                    scale,
-                                });
-                                clicked = Some(Selection::Span(index));
-                            }
-                            if (response.dragged() || response.drag_stopped())
-                                && let Some(drag) = &mut self.anchor_drag
-                                && drag.index == index
-                                && drag.right == right
+                        ui.painter().circle_filled(center, radius, Color32::WHITE);
+                        ui.painter()
+                            .circle_stroke(center, radius, Stroke::new(1.5_f32, color));
+                    }
+                    let response = ui
+                        .interact(
+                            Rect::from_center_size(center, Vec2::splat(20.0)),
+                            ui.id().with(("span_anchor", index, right)),
+                            Sense::click_and_drag(),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::Grab)
+                        .on_hover_text(if right {
+                            i18n::tr("Drag end anchor")
+                        } else {
+                            i18n::tr("Drag start anchor")
+                        });
+                    if response.clicked() {
+                        clicked = Some(Selection::Span(index));
+                    }
+                    if response.drag_started() {
+                        let mut x_positions = vec![];
+                        let columns: Vec<_> = layout.axis.as_ref().map_or_else(
+                            || items.iter().map(|item| item.0).collect(),
+                            |axis| axis.points.iter().map(|point| point.0).collect(),
+                        );
+                        for x in std::iter::once(staff.left)
+                            .chain(columns)
+                            .chain(std::iter::once(staff.right))
+                        {
+                            let screen = point(map_x(x), 0.0).x;
+                            if x_positions
+                                .last()
+                                .is_none_or(|&(previous, _)| screen > previous + 0.001)
                             {
-                                if response.dragged() {
-                                    drag.delta = response.drag_delta();
-                                }
-                                self.anchor_edit = Some(AnchorEdit {
-                                    index,
-                                    right,
-                                    position: drag.position(drag.delta),
-                                    started: response.drag_started(),
-                                    stopped: response.drag_stopped(),
-                                });
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                x_positions.push((screen, x));
                             }
                         }
+                        if x_positions.len() < 2 {
+                            x_positions = vec![
+                                (center.x - GAP * scale, source[0] - staff.spacing()),
+                                (center.x + GAP * scale, source[0] + staff.spacing()),
+                            ];
+                        }
+                        self.anchor_drag = Some(AnchorDrag {
+                            index,
+                            right,
+                            source,
+                            screen: center,
+                            source_per_y: staff.spacing() / (GAP * scale),
+                            delta: Vec2::ZERO,
+                            x_positions,
+                            upper,
+                            lower,
+                            leftmost,
+                            natural_width,
+                            scale,
+                        });
+                        clicked = Some(Selection::Span(index));
+                    }
+                    if (response.dragged() || response.drag_stopped())
+                        && let Some(drag) = &mut self.anchor_drag
+                        && drag.index == index
+                        && drag.right == right
+                    {
+                        if response.dragged() {
+                            drag.delta = response.drag_delta();
+                        }
+                        self.anchor_edit = Some(AnchorEdit {
+                            index,
+                            right,
+                            position: drag.position(drag.delta),
+                            started: response.drag_started(),
+                            stopped: response.drag_stopped(),
+                        });
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                     }
                 }
-                if measures.last().is_some_and(|measure| {
-                    measure.barline.is_none() && measure.expected_ticks.is_some()
-                }) {
-                    line(point(measure_end, 0.0), point(measure_end, 4.0), 1.0);
-                }
-            });
+            }
+        }
+        if measures
+            .last()
+            .is_some_and(|measure| measure.barline.is_none() && measure.expected_ticks.is_some())
+        {
+            line(point(measure_end, 0.0), point(measure_end, 4.0), 1.0);
+        }
         clicked
     }
 }
@@ -1691,6 +2395,331 @@ impl Preview {
 mod tests {
     use super::*;
     use libreomr::model::{Barline, KeyChange, KeySignature, Staff, StaffHeader};
+
+    fn choir_score() -> Score {
+        use libreomr::model::{Lyric, StaffAssignment, Syllabic};
+        let mut score = Score::default();
+        for staff in 0..8 {
+            let top = 30.0 + staff as f32 * 180.0;
+            score.staves.push(Staff {
+                lines: [top, top + 10.0, top + 20.0, top + 30.0, top + 40.0],
+                left: 20.0,
+                right: 1500.0,
+                header: StaffHeader {
+                    clef: if staff % 4 == 3 {
+                        Clef::Bass
+                    } else {
+                        Clef::Treble
+                    },
+                    key_signature: Some(KeySignature {
+                        fifths: if staff % 4 == 0 { 2 } else { 0 },
+                    }),
+                    ..Default::default()
+                },
+            });
+            score.staff_assignments.push(StaffAssignment {
+                staff,
+                part: staff % 4,
+                system: staff / 4,
+                name: ["Soprano", "Alto", "Tenor", "Bass"][staff % 4].into(),
+            });
+            for x in [140.0, 360.0, 700.0, 1200.0] {
+                if staff % 4 == 1 && x == 360.0 {
+                    continue;
+                }
+                let index = score.add_note(x, top + 30.0).unwrap();
+                for verse in 1..=4 {
+                    score.lyrics.push(Lyric {
+                        placement: Default::default(),
+                        note: index,
+                        verse,
+                        verse_label: None,
+                        text: format!("Lied{staff}-{verse}"),
+                        syllabic: Syllabic::Single,
+                        extend: false,
+                        confirmed: false,
+                        bounds: None,
+                    });
+                }
+            }
+            score.barlines.push(Barline {
+                staff,
+                x: 1000.0,
+                kind: BarlineKind::Single,
+                confirmed: false,
+            });
+        }
+        score
+    }
+
+    fn document_frame(
+        context: &egui::Context,
+        preview: &mut Preview,
+        score: &Score,
+        staff: usize,
+        selected: Option<Selection>,
+        events: Vec<egui::Event>,
+        size: Vec2,
+    ) -> egui::FullOutput {
+        context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    preview.show_document(ui, score, staff, selected, None);
+                });
+            },
+        )
+    }
+
+    #[test]
+    fn score_canvas_aligns_voices_and_fits_width_with_vertical_overflow() {
+        let score = choir_score();
+        let ctx = egui::Context::default();
+        let mut preview = Preview::fitted();
+        let mut output = None;
+        for _ in 0..4 {
+            output = Some(document_frame(
+                &ctx,
+                &mut preview,
+                &score,
+                0,
+                None,
+                vec![],
+                Vec2::new(900.0, 360.0),
+            ));
+        }
+        let layout = preview.document_layout.as_ref().unwrap();
+        assert_eq!(layout.systems.len(), 2);
+        let system = &layout.systems[0];
+        assert_eq!(system.rows.len(), 4);
+        let xs: Vec<_> = system
+            .rows
+            .iter()
+            .map(|(r, _)| r.map_x(1000.0, &score.staves[r.staff]) - r.leftmost)
+            .collect();
+        assert!(xs.iter().all(|x| (x - xs[0]).abs() < 0.01));
+        let (_, viewport, offset, content) = preview.canvas_view.unwrap();
+        assert!(system.rect.height() * preview.document_scale > viewport.height());
+        assert!(content.x <= viewport.width() + 1.0);
+        assert!(content.y > viewport.height());
+        assert!(offset.y < 10.0);
+        let output = output.unwrap();
+        assert!(
+            output.shapes.iter().any(
+                |s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="Soprano")
+                    && s.clip_rect.intersects(s.shape.visual_bounding_rect())
+            ),
+            "selected part is visible"
+        );
+    }
+
+    #[test]
+    fn score_canvas_follows_selection_but_preserves_manual_panning() {
+        let score = choir_score();
+        let ctx = egui::Context::default();
+        let mut preview = Preview::default();
+        let size = Vec2::new(600.0, 250.0);
+        let note = score
+            .notes
+            .iter()
+            .position(|n| n.staff == 7 && n.x == 1200.0)
+            .unwrap();
+        let selected = Some(Selection::Note(note));
+        for _ in 0..4 {
+            document_frame(&ctx, &mut preview, &score, 7, selected, vec![], size);
+        }
+        let (id, viewport, offset, _) = preview.canvas_view.unwrap();
+        assert!(
+            offset.x > 100.0 && offset.y > 500.0,
+            "selected late Bass note is revealed: {offset:?}"
+        );
+        let layout = preview.document_layout.as_ref().unwrap();
+        let (row, rect) = layout.systems[1]
+            .rows
+            .iter()
+            .find(|(r, _)| r.staff == 7)
+            .unwrap();
+        let x = (row.map_x(1200.0, &score.staves[7]) - row.leftmost) * preview.document_scale
+            - offset.x;
+        assert!((0.0..=viewport.width()).contains(&x));
+        let y = rect.center().y * preview.document_scale - offset.y;
+        assert!((0.0..=viewport.height()).contains(&y));
+        let mut state = egui::scroll_area::State::load(&ctx, id).unwrap();
+        state.offset = Vec2::ZERO;
+        state.store(&ctx, id);
+        for _ in 0..3 {
+            document_frame(&ctx, &mut preview, &score, 7, selected, vec![], size);
+        }
+        assert_eq!(
+            preview.canvas_view.unwrap().2,
+            Vec2::ZERO,
+            "same selection must not pull back a manually panned view"
+        );
+        let first = Some(Selection::Note(0));
+        for _ in 0..3 {
+            document_frame(&ctx, &mut preview, &score, 0, first, vec![], size);
+        }
+        assert!(preview.canvas_view.unwrap().2.y < 100.0);
+    }
+
+    #[test]
+    fn fitted_score_canvas_follows_selection_without_fitting_height() {
+        let score = choir_score();
+        let ctx = egui::Context::default();
+        let mut preview = Preview::fitted();
+        let mut wide_scale = None;
+        for (staff, size) in [
+            (0, Vec2::new(900.0, 360.0)),
+            (3, Vec2::new(900.0, 180.0)),
+            (7, Vec2::new(900.0, 360.0)),
+            (7, Vec2::new(900.0, 85.0)),
+            (7, Vec2::new(700.0, 180.0)),
+        ] {
+            let note = score.notes.iter().position(|n| n.staff == staff).unwrap();
+            for _ in 0..4 {
+                document_frame(
+                    &ctx,
+                    &mut preview,
+                    &score,
+                    staff,
+                    Some(Selection::Note(note)),
+                    vec![],
+                    size,
+                );
+            }
+            let system = &preview.document_layout.as_ref().unwrap().systems[staff / 4];
+            let (row, bounds) = system.rows.iter().find(|(r, _)| r.staff == staff).unwrap();
+            let (_, viewport, offset, content) = preview.canvas_view.unwrap();
+            let note_level = (score.notes[note].y - score.staves[staff].lines[0])
+                / score.staves[staff].spacing();
+            let y = (bounds.top() + 8.0 + (note_level - row.upper) * GAP) * preview.document_scale
+                - offset.y;
+            assert!(
+                (0.0..=viewport.height()).contains(&y),
+                "selected note after selection/resize: {y}, {viewport:?}"
+            );
+            assert!(content.x <= viewport.width() + 1.0);
+            assert!(offset.x < 1.0);
+            if size.x == 900.0 {
+                let previous = *wide_scale.get_or_insert(preview.document_scale);
+                assert!(
+                    (preview.document_scale - previous).abs() < 0.0001,
+                    "height changes must not shrink the score"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lyrics_render_and_select_their_note_in_octave_clef_preview() {
+        use libreomr::model::{Lyric, Syllabic};
+        let mut score = Score {
+            staves: vec![Staff {
+                lines: [20.0, 30.0, 40.0, 50.0, 60.0],
+                left: 20.0,
+                right: 300.0,
+                header: StaffHeader {
+                    clef: Clef::Treble8vb,
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        score.add_note(100.0, 60.0).unwrap();
+        score.lyrics.push(Lyric {
+            placement: Default::default(),
+            note: 0,
+            verse: 1,
+            verse_label: Some("1.".into()),
+            text: "für".into(),
+            syllabic: Syllabic::Single,
+            extend: false,
+            confirmed: false,
+            bounds: None,
+        });
+        let mut above = score.lyrics[0].clone();
+        above.placement = libreomr::model::LyricPlacement::Above;
+        above.text = "du".into();
+        above.verse_label = None;
+        score.lyrics.push(above);
+        let context = egui::Context::default();
+        let mut preview = Preview::default();
+        let mut render = |events| {
+            let mut selected = None;
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 500.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        selected = preview.show(ui, &score, 0, None);
+                    });
+                },
+            );
+            (output, selected)
+        };
+        for _ in 0..3 {
+            render(Vec::new());
+        }
+        let (output, _) = render(Vec::new());
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "1."))
+        );
+        let point = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "für" => {
+                    Some(s.shape.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("lyric is visible");
+        let above = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "du" => {
+                    let bounds = s.shape.visual_bounding_rect();
+                    assert!(s.clip_rect.contains_rect(bounds));
+                    Some(bounds)
+                }
+                _ => None,
+            })
+            .expect("above-staff lyric is visible without clipping");
+        assert!(above.bottom() < point.y);
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="8"))
+        );
+        let (_, selected) = render(vec![
+            egui::Event::PointerMoved(point),
+            egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ]);
+        assert_eq!(selected, Some(Selection::Note(0)));
+    }
 
     fn object_score() -> Score {
         let staff = Staff {
@@ -1771,6 +2800,28 @@ mod tests {
             ));
         }
         output.unwrap()
+    }
+
+    #[test]
+    fn object_preview_allocates_only_the_fitted_notation_height() {
+        let context = egui::Context::default();
+        let score = object_score();
+        let mut preview = Preview::fitted();
+        for width in [184.0, 364.0] {
+            let _ = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    ui.set_max_width(width);
+                    let before = ui.next_widget_position();
+                    preview.show_object(ui, &score, Selection::Barline(0), 160.0);
+                    let after = ui.next_widget_position();
+                    assert!(
+                        after.y - before.y < 144.0,
+                        "the next widget must follow the notation without reserved blank space: {}",
+                        after.y - before.y
+                    );
+                });
+            });
+        }
     }
 
     #[test]
