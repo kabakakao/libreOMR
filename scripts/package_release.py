@@ -252,6 +252,7 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--release-tag")
     parser.add_argument("--check-tag", help="Only check tag/version consistency; do not build/package")
+    parser.add_argument("--check-licenses", action="store_true", help="Check license texts for the complete locked dependency graph without built binaries")
     parser.add_argument("--source-tag", help="Package the tagged source with vendored dependencies")
     args = parser.parse_args()
     version = project_package(metadata())["version"]
@@ -261,6 +262,12 @@ def main():
         return
     if args.source_tag:
         print(source_package(ROOT, args.output, args.source_tag))
+        return
+    if args.check_licenses:
+        data = metadata(dependencies=True)
+        with tempfile.TemporaryDirectory(prefix="license-check-") as temporary:
+            copy_notices(ROOT, Path(temporary), data)
+        print("Validated license texts for the complete locked dependency graph")
         return
     target = native_target()
     if target not in TARGETS:

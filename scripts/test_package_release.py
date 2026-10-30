@@ -1,10 +1,12 @@
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -16,6 +18,23 @@ import package_release as packaging
 
 
 class PackagingTests(unittest.TestCase):
+    def test_license_check_catches_missing_dependency_notices_without_binaries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root, data = self.fixture(parent)
+            with (
+                patch.object(packaging, "ROOT", root),
+                patch.object(packaging, "metadata", return_value=data),
+                patch.object(packaging, "native_target", side_effect=AssertionError("must not inspect native binaries")),
+                patch.object(sys, "argv", ["package_release.py", "--check-licenses"]),
+                patch.object(sys, "stdout", io.StringIO()),
+            ):
+                packaging.main()
+                (parent / "dependency/LICENSE-MIT").unlink()
+                (parent / "dependency/fonts/Hack-Regular.txt").unlink()
+                with self.assertRaisesRegex(ValueError, "Missing license text for dependency-1.0.0"):
+                    packaging.main()
+
     def test_manifest_binary_names_match_packaging_contract(self):
         manifest = tomllib.loads((packaging.ROOT / "Cargo.toml").read_text(encoding="utf-8"))
         binaries = {target["name"] for target in manifest["bin"]}

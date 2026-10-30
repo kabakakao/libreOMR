@@ -17,7 +17,14 @@ Placeholders in these standard texts come from the SPDX template and are not
 presented as additional copyright claims. For `r-efi`, `AUTHORS` contains the
 license texts.
 
+The FlatBuffers and RTen crates used by OCR omit the repository-level license
+files from their published archives. Their supplemental files come from the
+exact commits recorded in each crate's `.cargo_vcs_info.json`.
+
 Packaging copies these files and their source index into `licenses/` and
 verifies their checksums. Dependency updates require missing notices for new
 versions to be copied from the corresponding source and recorded in
 `sources.json`. The project license does not change these components' licenses.
+Run `python scripts/package_release.py --check-licenses` to validate the complete
+locked dependency graph without building application binaries; CI also runs this
+check in the quality job.
