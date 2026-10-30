@@ -4010,9 +4010,15 @@ mod tests {
                 kind,
                 start: [160.0, 48.0],
                 end: [300.0, 48.0],
-                height: -48.0,
+                // Wedges require a positive half-opening; bows may curve upward.
+                height: if matches!(kind, SpanKind::Slur | SpanKind::Tie) {
+                    -48.0
+                } else {
+                    48.0
+                },
                 confirmed: false,
             });
+            assert!(changed.validate().is_ok(), "invalid span fixture: {kind:?}");
             variants.push(changed);
         }
         for kind in RepeatMarkKind::ALL {

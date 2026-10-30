@@ -536,8 +536,9 @@ mod tests {
         let context = egui::Context::default();
         App::configure_style(&context);
         let output = render(&mut app, &context, Vec2::new(760.0, 520.0), vec![]);
+        let expected = i18n::tr("Pitch reference: treble (assumed)");
         assert!(output.shapes.iter().any(|shape| match &shape.shape {
-            egui::Shape::Text(text) => text.galley.text().contains("Tonhoehenbasis"),
+            egui::Shape::Text(text) => text.galley.text().contains(expected),
             _ => false,
         }));
         app.problems.filter = Filter::Review;

@@ -45,14 +45,14 @@ fn changing_language_translates_labels_and_diagnostics_but_preserves_score_data(
     );
 
     i18n::set_language(Language::German);
-    assert_eq!(Clef::Treble.label(), "Violinschluessel");
+    assert_eq!(Clef::Treble.label(), "Violinschlüssel");
     assert_eq!(KeySignature { fifths: -1 }.label(), "F-Dur / d-Moll");
     let german = musicxml::export(&score, "Score {0}").unwrap();
     assert!(
         german
             .warnings
             .iter()
-            .any(|warning| warning.contains("ungeprueft"))
+            .any(|warning| warning.contains("ungeprüft"))
     );
     assert!(
         german

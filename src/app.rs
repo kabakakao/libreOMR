@@ -7740,7 +7740,7 @@ mod tests {
             }
             for _pass in 0..3 {
                 let output = render(&mut app, vec![]);
-                for expected in ["Bassschluessel", "Cis-Dur / ais-Moll"] {
+                for expected in [i18n::tr("Bass clef"), "Cis-Dur / ais-Moll"] {
                     let clef = output
                         .shapes
                         .iter()
@@ -8823,7 +8823,7 @@ mod tests {
                         .iter()
                         .find(|shape| {
                             matches!(&shape.shape,
-                        egui::Shape::Text(text) if text.galley.text() == "Objekt einfuegen")
+                        egui::Shape::Text(text) if text.galley.text() == i18n::tr("Insert object"))
                         })
                         .expect("insertion menu heading");
                     assert!(
@@ -10217,7 +10217,7 @@ mod tests {
                 app.redo();
                 assert_eq!(app.page.score.spans[0].kind, next);
                 app.select_object(Some(Object::Span(0)));
-                click(&mut app, "Geprueft");
+                click(&mut app, i18n::tr("Reviewed"));
                 assert!(!app.page.score.spans[0].confirmed);
                 let restored: Score =
                     serde_json::from_slice(&serde_json::to_vec(&app.page.score).unwrap()).unwrap();
@@ -10275,7 +10275,7 @@ mod tests {
                 app.select_object(Some(Object::KeyChange(0)));
                 previous = next;
             }
-            click(&mut app, "Tonartwechsel geprueft");
+            click(&mut app, i18n::tr("Key change reviewed"));
             assert!(!app.page.score.key_changes[0].confirmed);
             assert!(app.page.score.validate().is_ok());
             let restored: Score =
@@ -11357,7 +11357,7 @@ mod tests {
                     );
                 }
             }
-            for hidden in ["Bild oeffnen", "Speichern", "Demonstration"] {
+            for hidden in [i18n::tr("Open image"), "Speichern", "Demonstration"] {
                 assert!(
                     !output.shapes.iter().any(|shape| matches!(&shape.shape,
                     egui::Shape::Text(text) if text.galley.text() == hidden)),
@@ -11393,8 +11393,8 @@ mod tests {
             }
             let menu_output = render(&mut app, vec![]);
             for action in [
-                "Bild oeffnen",
-                "Projekt oeffnen",
+                i18n::tr("Open image"),
+                i18n::tr("Open project"),
                 "Speichern",
                 "MusicXML exportieren",
                 "Neu erkennen",
