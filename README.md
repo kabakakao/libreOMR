@@ -58,8 +58,8 @@ The proposals shown are not a finished, corrected transcription.
 
 Published versions are available from
 [GitHub Releases](https://github.com/kabakakao/libreOMR/releases).
-The [0.1.2 release notes](docs/release-notes/0.1.2.md) describe language selection,
-saved appearance settings and starting Windows without a console window.
+The [0.2.0 release notes](docs/release-notes/0.2.0.md) describe multi-part scores,
+lyrics and offline OCR, voice editing, and bows and dynamic wedges across systems.
 
 | Platform | Package |
 | --- | --- |
