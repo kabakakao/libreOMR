@@ -16,6 +16,10 @@ templates. Results require musical review and correction.
 
 - Import PDF, PNG, JPEG, TIFF and BMP, including multipage PDFs and TIFFs.
 - Recognize and edit notes, rests, clefs, accidentals and time signatures.
+- Group bracketed systems into separate parts continuing across pages.
+- Recognize lyrics from typeset PDFs and scans using bundled offline Rust OCR.
+  Edit verses and syllables above or below staves, and include them in the
+  preview, saved projects and MusicXML export.
 - Review and add articulations, dynamics, slurs, ties and repeat marks.
 - Compare the original image, recognized objects and notation preview directly.
 - Select and edit multiple notes/rests together, including voices and tuplets.
@@ -55,8 +59,8 @@ The proposals shown are not a finished, corrected transcription.
 
 Published versions are available from
 [GitHub Releases](https://github.com/kabakakao/libreOMR/releases).
-The [0.1.2 release notes](docs/release-notes/0.1.2.md) describe language selection,
-saved appearance settings and starting Windows without a console window.
+The [0.2.0 release notes](docs/release-notes/0.2.0.md) describe multi-part scores,
+lyrics and offline OCR, voice editing, and bows and dynamic wedges across systems.
 
 | Platform | Package |
 | --- | --- |
@@ -119,7 +123,7 @@ checksums. You can also build libreOMR from source.
 
 ### Build from source
 
-Install a [Rust toolchain](https://rustup.rs/) version **1.92** or newer.
+Install a [Rust toolchain](https://rustup.rs/) version **1.94** or newer.
 Run the following commands from the project root.
 
 macOS also requires Xcode Command Line Tools. Windows requires the MSVC build
@@ -170,7 +174,12 @@ buttons and the percentage control help you navigate the score image.
 Select an object in the scan, object list or preview. The **Correction** panel
 on the right lets you edit its properties, such as pitch, accidental, note value,
 dots or articulation. The object preview shows the selected symbol; the notation
-preview below shows the current staff.
+preview below shows the current staff. In **Details**, expand **Object properties**,
+**Lyrics**, **Staff information** or **Part assignment** to work on one area at a
+time. Selecting an object opens its properties automatically. The **Objects**
+list likewise keeps one staff expanded at a time.
+Less common note settings (tuplets, grace notes, small noteheads and articulation)
+are grouped under **Notation options**; a count indicates active options.
 
 Move or delete incorrect objects. Use the score image's context menu to insert
 missing notes, rests and other symbols. Clef, key signature and time signature
@@ -192,6 +201,14 @@ change size independently of voice; grace notes do not add measure duration.
 Rest tuplets support **Triplet 3:2**, **Septuplet 7:4** and custom ratios.
 Multimeasure rests retain their duration during shared duration/dot/tuplet edits.
 
+For slurs, ties, crescendos and decrescendos, drag the endpoint handles onto notes or select the start and
+end notes under **Object properties**. Attached endpoints follow note corrections.
+**Flip bow** switches the bow above/below the notes. Select two notes before
+adding a bow to connect them directly, including across system breaks on the
+same page. This also works for dynamic wedges: their opening continues across
+system breaks. Both scan and preview show separate segments; MusicXML keeps
+one matching start/end pair across systems. Free wedge endpoints remain available.
+
 Confirm a reviewed object with the circle in the object list. **F6** jumps to
 the next unreviewed object. Confirmation records your review; the rest of the
 score still needs checking.
@@ -203,6 +220,20 @@ matches the time signature. Click **Export check** to open the list of problems
 and unreviewed objects. Select an entry to navigate to its location. Correct
 missing information and inconsistent durations before exporting. Pickup measures
 may intentionally be incomplete.
+
+Use **Ctrl+click** on Windows/Linux or **Cmd+click** on macOS to add or
+remove objects from the selection in the scan, preview or object list.
+**Shift+click** selects a range in staff/position order; **Ctrl/Cmd+A** selects
+all objects (respecting the current-staff filter). The Details panel can change
+the note value or **Voice** for the selection. Delete removes the selection;
+each shared edit is one undo step.
+
+Notes and rests support **Voice 1-255** within one five-line staff. Assign each
+independent rhythmic line to a voice in Details, including its rests. New notes
+and rests inherit the last selected voice. Measure checks and MusicXML export keep
+voice durations separate; the preview uses opposing stems. Existing projects
+without voice assignments use voice 1. Automatic recognition still requires
+manual review and does not reconstruct independent voices.
 
 ### 4. Save a project
 
@@ -270,11 +301,14 @@ libreOMR is primarily suitable for trying the workflow on clear, printed
 single-part scores. Skewed or damaged scans, dense beaming, unfamiliar fonts
 and overlapping symbols can cause missing or incorrect proposals.
 
-Export treats staves as **one continuous part**. Within a staff, notes and rests
-can be assigned to independent rhythmic voices manually; recognition initially
-assigns every object to voice 1. Full reconstruction of
-polyphonic piano or orchestral scores, automatic instrument assignment and
-transposition are not implemented. The preview shows the edited recognition
+Bracketed systems can be proposed as parallel parts, with editable part
+assignments and names. Unassigned staves retain the continuous single-part
+workflow. Full reconstruction of independent voices sharing a staff, complex
+orchestral grouping and instrument transposition are not implemented. Lyric
+recognition currently uses an existing PDF text layer; text OCR for scanned
+PDFs and image files is not implemented. Syllable alignment needs review,
+especially when notes are missing or words continue across systems.
+The preview shows the edited recognition
 state; beaming and page layout are not reconstructed faithfully. Error-free
 transcription of arbitrary scores is not currently achieved.
 

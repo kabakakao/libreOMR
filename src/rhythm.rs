@@ -77,7 +77,7 @@ impl MeasureValidity {
             &[
                 (
                     "0",
-                    (if self.actual_ticks == expected {
+                    (if self.voice_ticks.iter().all(|(_, ticks)| *ticks == expected) {
                         crate::i18n::tr("valid")
                     } else {
                         crate::i18n::tr("invalid")

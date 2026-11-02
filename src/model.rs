@@ -7,16 +7,18 @@ pub(crate) const TICKS_PER_QUARTER: u32 = 192;
 pub enum Clef {
     #[default]
     Treble,
+    Treble8vb,
     Bass,
     Unknown,
 }
 
 impl Clef {
-    pub const ALL: [Self; 3] = [Self::Unknown, Self::Treble, Self::Bass];
+    pub const ALL: [Self; 4] = [Self::Unknown, Self::Treble, Self::Treble8vb, Self::Bass];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Treble => crate::i18n::tr("Treble clef"),
+            Self::Treble8vb => crate::i18n::tr("Treble clef (octave below)"),
             Self::Bass => crate::i18n::tr("Bass clef"),
             Self::Unknown => crate::i18n::tr("Unknown"),
         }
@@ -25,6 +27,7 @@ impl Clef {
     pub fn bottom_pitch(self) -> i32 {
         match self {
             Self::Bass => 18,
+            Self::Treble8vb => 23,
             Self::Treble | Self::Unknown => 30,
         }
     }
@@ -158,9 +161,9 @@ pub struct Rest {
     pub x: f32,
     pub y: f32,
     pub staff: usize,
-    pub duration: Duration,
     #[serde(default = "default_voice")]
     pub voice: u8,
+    pub duration: Duration,
     #[serde(default)]
     pub tuplet: Option<Tuplet>,
     #[serde(default)]
@@ -460,7 +463,7 @@ impl SymbolBounds {
         x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
     }
 
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         [self.left, self.top, self.right, self.bottom]
             .iter()
             .all(|value| value.is_finite())
@@ -589,13 +592,13 @@ pub struct Note {
     pub x: f32,
     pub y: f32,
     pub staff: usize,
+    #[serde(default = "default_voice")]
+    pub voice: u8,
     pub pitch: i32,
     pub accidental: i8,
     #[serde(default = "legacy_accidental_is_explicit")]
     pub accidental_explicit: bool,
     pub duration: Duration,
-    #[serde(default = "default_voice")]
-    pub voice: u8,
     #[serde(default)]
     pub dots: u8,
     #[serde(default)]
@@ -674,6 +677,12 @@ impl Note {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Score {
+    #[serde(default)]
+    pub staff_assignments: Vec<StaffAssignment>,
+    #[serde(default)]
+    pub lyrics: Vec<Lyric>,
+    #[serde(default)]
+    pub source_text: Vec<TextGlyph>,
     pub staves: Vec<Staff>,
     pub notes: Vec<Note>,
     #[serde(default)]
@@ -690,6 +699,73 @@ pub struct Score {
     pub dynamics: Vec<Dynamic>,
     #[serde(default)]
     pub repeat_marks: Vec<RepeatMark>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StaffAssignment {
+    pub staff: usize,
+    pub part: usize,
+    pub system: usize,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Syllabic {
+    #[default]
+    Single,
+    Begin,
+    Middle,
+    End,
+}
+
+impl Syllabic {
+    pub fn xml(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Begin => "begin",
+            Self::Middle => "middle",
+            Self::End => "end",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Lyric {
+    pub note: usize,
+    pub verse: u16,
+    #[serde(default, skip_serializing_if = "LyricPlacement::is_below")]
+    pub placement: LyricPlacement,
+    /// Printed label at the start of a verse, distinct from its syllable text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verse_label: Option<String>,
+    pub text: String,
+    pub syllabic: Syllabic,
+    pub extend: bool,
+    pub confirmed: bool,
+    pub bounds: Option<SymbolBounds>,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum LyricPlacement {
+    Above,
+    #[default]
+    Below,
+}
+
+impl LyricPlacement {
+    pub fn is_below(&self) -> bool {
+        *self == Self::Below
+    }
+}
+
+/// Positioned Unicode from the PDF, in the same pixel coordinates as its raster.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TextGlyph {
+    pub text: String,
+    pub baseline: f32,
+    pub bounds: SymbolBounds,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -737,13 +813,60 @@ impl SpanKind {
 pub struct Span {
     pub staff: usize,
     pub kind: SpanKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_anchor: Option<NoteAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_anchor: Option<NoteAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<BowContinuation>,
+    /// Relative openings at the visible ends of a wedge fragment (0 = closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wedge_openings: Option<[f32; 2]>,
     pub start: [f32; 2],
     pub end: [f32; 2],
     pub height: f32,
     pub confirmed: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteAnchor {
+    pub note: usize,
+    pub offset: [f32; 2],
+}
+
+/// Geometry at one system break, relative to each row's top line and spacing.
+/// Heights store bow curvature or the half-opening of a dynamic wedge.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BowContinuation {
+    pub exit_x: f32,
+    pub entry_x: f32,
+    pub exit_y: f32,
+    pub entry_y: f32,
+    pub exit_height: f32,
+    pub entry_height: f32,
+}
+
 impl Span {
+    pub fn wedge_opening(&self, fraction: f32) -> f32 {
+        let [start, end] = self
+            .wedge_openings
+            .unwrap_or(if self.kind == SpanKind::Crescendo {
+                [0.0, 1.0]
+            } else {
+                [1.0, 0.0]
+            });
+        self.height * (start + (end - start) * fraction)
+    }
+
+    pub fn wedge_point(&self, fraction: f32, side: f32) -> [f32; 2] {
+        [
+            self.start[0] + (self.end[0] - self.start[0]) * fraction,
+            self.start[1]
+                + (self.end[1] - self.start[1]) * fraction
+                + side * self.wedge_opening(fraction),
+        ]
+    }
+
     pub fn curve_point(&self, fraction: f32) -> [f32; 2] {
         [
             self.start[0] + (self.end[0] - self.start[0]) * fraction,
@@ -813,7 +936,20 @@ impl Score {
         let mut order: Vec<_> = (0..self.staves.len()).collect();
         order.sort_by(|&a, &b| self.staves[a].lines[0].total_cmp(&self.staves[b].lines[0]));
         let mut meter = inherited;
+        let part = self
+            .staff_assignments
+            .iter()
+            .find(|a| a.staff == staff_index)
+            .map(|a| a.part);
         for index in order {
+            if let Some(part) = part
+                && !self
+                    .staff_assignments
+                    .iter()
+                    .any(|a| a.staff == index && a.part == part)
+            {
+                continue;
+            }
             meter = self.staves[index].header.time_signature.or(meter);
             if let Some(change) = self
                 .time_changes
@@ -838,6 +974,7 @@ impl Score {
     }
 
     pub fn recompute_accidentals(&mut self) {
+        let previous: Vec<_> = self.notes.iter().map(|note| note.accidental).collect();
         for (staff_index, staff) in self.staves.iter().enumerate() {
             let mut bars: Vec<_> = self
                 .barlines
@@ -892,9 +1029,14 @@ impl Score {
                     });
                     if note.accidental != value {
                         note.accidental = value;
-                        note.confirmed = false;
                     }
                 }
+            }
+        }
+        self.carry_tie_accidentals();
+        for (note, previous) in self.notes.iter_mut().zip(previous) {
+            if note.accidental != previous {
+                note.confirmed = false;
             }
         }
     }
@@ -939,11 +1081,11 @@ impl Score {
             x,
             y,
             staff: staff_index,
+            voice: 1,
             pitch,
             accidental: staff.accidental_at(pitch),
             accidental_explicit: false,
             duration: Duration::Quarter,
-            voice: 1,
             dots: 0,
             triplet: false,
             tuplet: None,
@@ -970,8 +1112,8 @@ impl Score {
             x,
             y,
             staff: staff_index,
-            duration,
             voice: 1,
+            duration,
             tuplet: None,
             dots: 0,
             measures: None,
@@ -1003,6 +1145,37 @@ impl Score {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut assigned = std::collections::HashSet::new();
+        for assignment in &self.staff_assignments {
+            if assignment.staff >= self.staves.len()
+                || !assigned.insert(assignment.staff)
+                || assignment.name.chars().any(invalid_xml_character)
+            {
+                return Err("Invalid staff/part assignment in project.".into());
+            }
+        }
+        let mut verses = std::collections::HashSet::new();
+        for lyric in &self.lyrics {
+            if lyric.note >= self.notes.len()
+                || lyric.verse == 0
+                || !verses.insert((lyric.note, lyric.verse, lyric.placement))
+                || lyric.text.chars().any(invalid_xml_character)
+                || lyric
+                    .verse_label
+                    .as_ref()
+                    .is_some_and(|label| label.chars().any(invalid_xml_character))
+                || lyric.bounds.as_ref().is_some_and(|bounds| !bounds.valid())
+            {
+                return Err("Invalid lyric in project.".into());
+            }
+        }
+        if self.source_text.iter().any(|text| {
+            !text.baseline.is_finite()
+                || !text.bounds.valid()
+                || text.text.chars().any(invalid_xml_character)
+        }) {
+            return Err("Invalid source text in project.".into());
+        }
         for mark in &self.repeat_marks {
             if !mark.x.is_finite()
                 || !mark.y.is_finite()
@@ -1059,17 +1232,29 @@ impl Score {
             }
         }
         for span in &self.spans {
+            if !self.valid_span_anchors(span) {
+                return Err(crate::i18n::tr("Invalid wedge, slur or tie in project.").into());
+            }
+            let segments = self.span_segments(span);
             if span
                 .start
                 .iter()
                 .chain(span.end.iter())
                 .chain(std::iter::once(&span.height))
                 .any(|value| !value.is_finite())
-                || self
-                    .staves
-                    .get(span.staff)
-                    .is_none_or(|staff| span.start[0] < staff.left || span.end[0] > staff.right)
-                || span.start[0] >= span.end[0]
+                || segments.is_empty()
+                || segments.iter().any(|segment| {
+                    segment
+                        .start
+                        .iter()
+                        .chain(segment.end.iter())
+                        .any(|v| !v.is_finite())
+                        || self.staves.get(segment.staff).is_none_or(|staff| {
+                            segment.start[0] < staff.left
+                                || segment.end[0] > staff.right
+                                || segment.start[0] >= segment.end[0]
+                        })
+                })
                 || (matches!(span.kind, SpanKind::Crescendo | SpanKind::Decrescendo)
                     && span.height <= 0.0)
             {
@@ -1147,6 +1332,10 @@ impl Score {
         }
         Ok(())
     }
+}
+
+fn invalid_xml_character(c: char) -> bool {
+    !matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1922,6 +2111,7 @@ mod tests {
             time_changes: vec![],
             dynamics: vec![],
             repeat_marks: vec![],
+            ..Score::default()
         };
         score.add_note(50.0, 60.0);
         let header = StaffHeader {
@@ -1949,6 +2139,10 @@ mod tests {
         assert!(score.spans.is_empty());
         for kind in SpanKind::ALL {
             score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind,
                 start: [30.0, 80.0],
@@ -1973,22 +2167,42 @@ mod tests {
         assert!(restored.validate().is_ok());
         for bad in [
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 1,
                 ..score.spans[0].clone()
             },
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 start: [180.0, 80.0],
                 ..score.spans[0].clone()
             },
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 end: [210.0, 80.0],
                 ..score.spans[0].clone()
             },
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 height: f32::NAN,
                 ..score.spans[0].clone()
             },
             Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 height: -1.0,
                 ..score.spans[0].clone()
             },
@@ -2041,6 +2255,7 @@ mod tests {
             time_changes: vec![],
             dynamics: vec![],
             repeat_marks: vec![],
+            ..Score::default()
         };
         score.add_note(40.0, 60.0);
         score.add_note(60.0, 55.0);
@@ -2068,6 +2283,7 @@ mod tests {
             time_changes: vec![],
             dynamics: vec![],
             repeat_marks: vec![],
+            ..Score::default()
         };
         score.add_note(40.0, 60.0);
         score.notes[0].articulation = Articulation::Staccato;

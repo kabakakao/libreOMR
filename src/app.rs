@@ -1,3 +1,7 @@
+#[cfg(test)]
+mod bow_tests;
+#[cfg(test)]
+mod multiselect_tests;
 mod problems;
 mod selection;
 
@@ -169,6 +173,17 @@ impl JobReporter {
         self.send(JobEvent::Status("Check skew and straighten image"));
         recognition::straighten(image)
     }
+
+    fn recognize_with_text(
+        &self,
+        image: &GrayImage,
+        text: Vec<libreomr::model::TextGlyph>,
+    ) -> Result<Score, String> {
+        self.send(JobEvent::Image(image.clone()));
+        recognition::recognize_with_text(image, text, |progress| {
+            self.send(JobEvent::Progress(progress))
+        })
+    }
 }
 
 #[derive(Default)]
@@ -236,6 +251,16 @@ struct RunningImport {
     receiver: mpsc::Receiver<JobEvent>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+enum InspectorSection {
+    #[default]
+    Object,
+    Lyrics,
+    Staff,
+    Part,
+    Closed,
+}
+
 #[derive(Default)]
 struct PageState {
     image: GrayImage,
@@ -246,6 +271,7 @@ struct PageState {
     selected_object: Option<Object>,
     selection: Vec<Object>,
     selection_anchor: Option<Object>,
+    active_voice: u8,
     object_drag: Option<ObjectDrag>,
     canvas_context: Option<(Vec2, Option<Object>)>,
     selected_staff: usize,
@@ -255,6 +281,7 @@ struct PageState {
     reveal_selection: bool,
     reveal_x: Option<f32>,
     show_object_list: bool,
+    inspector_section: InspectorSection,
     staff_spacing: f32,
     undo: Vec<Score>,
     redo: Vec<Score>,
@@ -594,6 +621,14 @@ impl App {
                 }
             }
             if finished {
+                if let Some(index) = (0..self.pages.len()).find(|&i| self.page_at(i).id == id)
+                    && index > 0
+                {
+                    let previous = self.page_at(index - 1).score.clone();
+                    if let Some(page) = self.page_by_id_mut(id) {
+                        page.score.inherit_part_headers(&previous);
+                    }
+                }
                 self.running_import = None;
                 self.dirty = true;
                 self.problems.invalidate();
@@ -876,7 +911,13 @@ impl App {
                     .spans
                     .iter()
                     .enumerate()
-                    .map(|(index, span)| (span.staff, span.start[0], Object::Span(index))),
+                    .map(|(index, span)| {
+                        (
+                            span.staff,
+                            self.page.score.resolved_span(span).start[0],
+                            Object::Span(index),
+                        )
+                    }),
             )
             .chain(
                 self.page
@@ -926,26 +967,112 @@ impl App {
         objects.into_iter().map(|(_, _, object)| object).collect()
     }
 
+    fn selected_objects(&self) -> Vec<Object> {
+        if self.page.selection.is_empty() {
+            self.page.selected_object.into_iter().collect()
+        } else {
+            self.page.selection.clone()
+        }
+    }
+
+    fn object_staff(&self, object: Object) -> usize {
+        match object {
+            Object::Note(i) => self.page.score.notes[i].staff,
+            Object::Rest(i) => self.page.score.rests[i].staff,
+            Object::Barline(i) => self.page.score.barlines[i].staff,
+            Object::Span(i) => self.page.score.spans[i].staff,
+            Object::KeyChange(i) => self.page.score.key_changes[i].staff,
+            Object::TimeChange(i) => self.page.score.time_changes[i].staff,
+            Object::Dynamic(i) => self.page.score.dynamics[i].staff,
+            Object::RepeatMark(i) => self.page.score.repeat_marks[i].staff,
+        }
+    }
+
+    fn object_selected(&self, object: Object) -> bool {
+        self.page.selection.contains(&object) || self.page.selected_object == Some(object)
+    }
+
+    fn click_object(&mut self, object: Option<Object>, modifiers: egui::Modifiers) {
+        let Some(object) = object else {
+            if !modifiers.ctrl && !modifiers.command && !modifiers.shift {
+                self.select_object(None);
+            }
+            return;
+        };
+        let additive = modifiers.ctrl || modifiers.command || modifiers.mac_cmd;
+        let show_object_list = self.page.show_object_list;
+        if modifiers.shift {
+            let mut objects = self.ordered_objects();
+            objects.sort_by(|a, b| {
+                self.page.score.staves[self.object_staff(*a)].lines[0]
+                    .total_cmp(&self.page.score.staves[self.object_staff(*b)].lines[0])
+            });
+            let anchor = self
+                .page
+                .selection_anchor
+                .or(self.page.selected_object)
+                .unwrap_or(object);
+            if let (Some(start), Some(end)) = (
+                objects.iter().position(|o| *o == anchor),
+                objects.iter().position(|o| *o == object),
+            ) {
+                let mut selection = if additive {
+                    self.selected_objects()
+                } else {
+                    vec![]
+                };
+                for &item in &objects[start.min(end)..=start.max(end)] {
+                    if !selection.contains(&item) {
+                        selection.push(item);
+                    }
+                }
+                self.focus_object(Some(object));
+                self.page.selection = selection;
+                self.page.selection_anchor = Some(anchor);
+            }
+        } else if additive {
+            let mut selection = self.selected_objects();
+            if let Some(index) = selection.iter().position(|o| *o == object) {
+                selection.remove(index);
+                self.focus_object(selection.last().copied());
+            } else {
+                selection.push(object);
+                self.focus_object(Some(object));
+            }
+            self.page.selection = selection;
+            self.page.selection_anchor = self.page.selected_object;
+        } else {
+            self.select_object(Some(object));
+        }
+        if additive || modifiers.shift {
+            self.page.show_object_list = show_object_list;
+        }
+    }
+
     fn select_object(&mut self, object: Option<Object>) {
-        self.page.selection = object
-            .filter(|object| matches!(object, Object::Note(_) | Object::Rest(_)))
-            .into_iter()
-            .collect();
+        self.page.selection = object.into_iter().collect();
         self.page.selection_anchor = object;
+        self.focus_object(object);
+    }
+
+    fn focus_object(&mut self, object: Option<Object>) {
         self.page.reveal_x = None;
         self.page.selected = None;
         self.page.selected_rest = None;
         self.page.selected_object = object;
         if object.is_some() {
             self.page.show_object_list = false;
+            self.page.inspector_section = InspectorSection::Object;
         }
         match object {
             Some(Object::Note(index)) => {
                 self.page.selected = Some(index);
+                self.page.active_voice = self.page.score.notes[index].voice;
                 self.page.selected_staff = self.page.score.notes[index].staff;
             }
             Some(Object::Rest(index)) => {
                 self.page.selected_rest = Some(index);
+                self.page.active_voice = self.page.score.rests[index].voice;
                 self.page.selected_staff = self.page.score.rests[index].staff;
             }
             Some(Object::Barline(index)) => {
@@ -995,7 +1122,7 @@ impl App {
         self.snapshot();
         match object {
             Object::Note(index) => {
-                self.page.score.notes.remove(index);
+                self.page.score.remove_note(index);
             }
             Object::Rest(index) => {
                 self.page.score.rests.remove(index);
@@ -1162,6 +1289,10 @@ impl App {
                 }
                 Insert::Span(kind) => {
                     self.page.score.spans.push(Span {
+                        start_anchor: None,
+                        end_anchor: None,
+                        continuation: None,
+                        wedge_openings: None,
                         staff: staff_index,
                         kind,
                         start: position.into(),
@@ -1177,6 +1308,11 @@ impl App {
                 }
                 Insert::Staff => unreachable!(),
             };
+            match object {
+                Object::Note(i) => self.page.score.notes[i].voice = self.page.active_voice.max(1),
+                Object::Rest(i) => self.page.score.rests[i].voice = self.page.active_voice.max(1),
+                _ => {}
+            }
             self.page.score.recompute_accidentals();
             self.select_object(Some(object));
         }
@@ -1196,7 +1332,11 @@ impl App {
                 ui.close();
             }
             if ui.button(i18n::tr("Delete")).clicked() {
-                self.delete_object(object);
+                if self.object_selected(object) {
+                    self.delete_selection();
+                } else {
+                    self.delete_object(object);
+                }
                 ui.close();
             }
         } else {
@@ -1281,6 +1421,7 @@ impl App {
         if let Some(Object::Span(index)) = self.page.selected_object
             && let Some(span) = self.page.score.spans.get(index)
         {
+            let span = self.page.score.resolved_span(span);
             for (right, point) in [(false, span.start), (true, span.end)] {
                 if (Vec2::from(point) - position).length() * self.page.zoom <= 10.0 {
                     return Some(DragTarget::Anchor(index, right));
@@ -1403,7 +1544,7 @@ impl App {
                 hits.push((distance, Object::Barline(index)));
             }
         }
-        for (index, span) in self.page.score.spans.iter().enumerate() {
+        for (index, span) in self.page.score.drawable_spans() {
             let distance = if matches!(span.kind, SpanKind::Slur | SpanKind::Tie) {
                 (0..40)
                     .map(|step| {
@@ -1417,13 +1558,8 @@ impl App {
                 [-1.0, 1.0]
                     .into_iter()
                     .map(|side| {
-                        let mut start = span.start;
-                        let mut end = span.end;
-                        if span.kind == SpanKind::Crescendo {
-                            end[1] += side * span.height;
-                        } else {
-                            start[1] += side * span.height;
-                        }
+                        let start = span.wedge_point(0.0, side);
+                        let end = span.wedge_point(1.0, side);
                         segment_distance(start, end)
                     })
                     .fold(f32::INFINITY, f32::min)
@@ -1550,19 +1686,34 @@ impl App {
                 self.page.score.recompute_accidentals();
             }
             DragTarget::Body(Object::Span(index)) => {
-                let original = &drag.score.spans[index];
+                let original = drag.score.resolved_span(&drag.score.spans[index]);
                 let staff = &self.page.score.staves[original.staff];
+                let end_staff = original.end_anchor.as_ref().map_or(staff, |a| {
+                    &self.page.score.staves[self.page.score.notes[a.note].staff]
+                });
                 let shift_x = delta.x.clamp(
-                    staff.left - original.start[0],
-                    staff.right - original.end[0],
+                    (staff.left - original.start[0]).max(end_staff.left - original.end[0]),
+                    (staff.right - original.start[0]).min(end_staff.right - original.end[0]),
                 );
                 let shift_y = delta.y.clamp(
                     -original.start[1].min(original.end[1]),
                     self.page.image.height() as f32 - 1.0 - original.start[1].max(original.end[1]),
                 );
                 let span = &mut self.page.score.spans[index];
+                for (anchor, source) in [
+                    (&mut span.start_anchor, &original.start_anchor),
+                    (&mut span.end_anchor, &original.end_anchor),
+                ] {
+                    if let (Some(anchor), Some(source)) = (anchor, source) {
+                        anchor.offset = [source.offset[0] + shift_x, source.offset[1] + shift_y];
+                    }
+                }
                 span.start = [original.start[0] + shift_x, original.start[1] + shift_y];
                 span.end = [original.end[0] + shift_x, original.end[1] + shift_y];
+                if let (Some(c), Some(source)) = (&mut span.continuation, &original.continuation) {
+                    c.exit_y = source.exit_y + shift_y / staff.spacing();
+                    c.entry_y = source.entry_y + shift_y / end_staff.spacing();
+                }
                 span.confirmed = true;
             }
             DragTarget::EndingAnchor(index, right) => {
@@ -1578,21 +1729,64 @@ impl App {
                 mark.confirmed = true;
             }
             DragTarget::Anchor(index, right) => {
-                let original = &drag.score.spans[index];
+                let original = drag.score.resolved_span(&drag.score.spans[index]);
+                let source = if right { original.end } else { original.start };
+                let target = [source[0] + delta.x, source[1] + delta.y];
+                {
+                    let nearest = self
+                        .page
+                        .score
+                        .notes
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, note)| {
+                            let gap = self.page.score.staves[note.staff].spacing();
+                            let distance = ((note.x - target[0]).powi(2)
+                                + (note.y - target[1]).powi(2))
+                            .sqrt()
+                                / gap;
+                            (distance <= 1.5).then_some((i, distance))
+                        })
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(i, _)| i);
+                    if let Some(note) = nearest {
+                        let mut span = original.clone();
+                        if self.page.score.attach_span_note(&mut span, right, note) {
+                            self.page.selected_staff = span.staff;
+                            self.page.score.spans[index] = span;
+                            self.page.score.recompute_accidentals();
+                            return;
+                        }
+                    }
+                    if original
+                        .end_anchor
+                        .as_ref()
+                        .is_some_and(|a| self.page.score.notes[a.note].staff != original.staff)
+                    {
+                        return;
+                    }
+                }
                 let staff = &self.page.score.staves[original.staff];
                 let span = &mut self.page.score.spans[index];
+                if right {
+                    span.end_anchor = None;
+                } else {
+                    span.start_anchor = None;
+                }
                 let (point, min_x, max_x) = if right {
                     (&mut span.end, original.start[0] + 1.0, staff.right)
                 } else {
                     (&mut span.start, staff.left, original.end[0] - 1.0)
                 };
-                let source = if right { original.end } else { original.start };
                 *point = [
                     (source[0] + delta.x).clamp(min_x, max_x),
                     (source[1] + delta.y).clamp(0.0, self.page.image.height() as f32 - 1.0),
                 ];
                 span.confirmed = true;
             }
+        }
+        if matches!(drag.target, DragTarget::Anchor(_, _)) {
+            self.page.score.recompute_accidentals();
         }
     }
 
@@ -1667,8 +1861,13 @@ impl App {
                     .next()
                     .expect("screenshot input page");
                 app.page.name = page.name();
-                app.page.image =
-                    recognition::straighten(page.render().expect("screenshot page rendering"));
+                app.page.score.source_text = page.text();
+                let image = page.render().expect("screenshot page rendering");
+                app.page.image = if app.page.score.source_text.is_empty() {
+                    recognition::straighten(image)
+                } else {
+                    image
+                };
                 app.set_texture(&context.egui_ctx);
             }
             match std::env::var("LIBREOMR_SCREENSHOT_THEME").as_deref() {
@@ -1682,7 +1881,12 @@ impl App {
                 }
                 _ => {}
             }
-            app.page.score = recognition::recognize(&app.page.image);
+            app.page.score = recognition::recognize_with_text(
+                &app.page.image,
+                std::mem::take(&mut app.page.score.source_text),
+                |_| {},
+            )
+            .expect("screenshot recognition and local OCR");
             if std::env::var_os("LIBREOMR_PREVIEW_ACCIDENTALS_SCREENSHOT").is_some() {
                 if let Some(staff) = app.page.score.staves.first_mut() {
                     staff.header.clef = Clef::Bass;
@@ -1919,6 +2123,306 @@ impl App {
         Self::load_source(ImportSource::File(path), reporter)
     }
 
+    fn part_editor(&mut self, ui: &mut egui::Ui) {
+        let staff = self.page.selected_staff;
+        let existing = self
+            .page
+            .score
+            .staff_assignments
+            .iter()
+            .find(|a| a.staff == staff)
+            .cloned();
+        if let Some(mut assignment) = existing {
+            ui.label(i18n::tr("Part"));
+            let old_part = assignment.part;
+            let mut display_part = assignment.part + 1;
+            let mut changed = ui
+                .add(egui::DragValue::new(&mut display_part).range(1..=64))
+                .changed();
+            assignment.part = display_part - 1;
+            changed |= ui.text_edit_singleline(&mut assignment.name).changed();
+            if changed {
+                self.snapshot();
+                for a in &mut self.page.score.staff_assignments {
+                    if a.staff == staff {
+                        a.part = assignment.part;
+                    }
+                    if a.part == assignment.part
+                        && (old_part == assignment.part || a.staff == staff)
+                    {
+                        a.name = assignment.name.clone();
+                    }
+                }
+            }
+        } else if ui.button(i18n::tr("Assign part")).clicked() {
+            self.snapshot();
+            self.page
+                .score
+                .staff_assignments
+                .push(libreomr::model::StaffAssignment {
+                    staff,
+                    part: staff,
+                    system: 0,
+                    name: format!("{} {}", i18n::tr("Part"), staff + 1),
+                });
+        }
+    }
+
+    fn lyric_neighbors(
+        &self,
+        note: usize,
+        verse: u16,
+        placement: libreomr::model::LyricPlacement,
+    ) -> [Option<usize>; 2] {
+        let score = &self.page.score;
+        let staff = score.notes[note].staff;
+        let part = score.staff_assignments.iter().find(|a| a.staff == staff);
+        let mut notes: Vec<_> = score
+            .lyrics
+            .iter()
+            .filter(|l| l.verse == verse && l.placement == placement)
+            .map(|l| l.note)
+            .filter(|&i| {
+                let other = score.notes[i].staff;
+                part.map_or(other == staff, |part| {
+                    score
+                        .staff_assignments
+                        .iter()
+                        .any(|a| a.staff == other && a.part == part.part)
+                })
+            })
+            .collect();
+        notes.sort_by(|&a, &b| {
+            score.staves[score.notes[a].staff].lines[0]
+                .total_cmp(&score.staves[score.notes[b].staff].lines[0])
+                .then(score.notes[a].x.total_cmp(&score.notes[b].x))
+                .then(a.cmp(&b))
+        });
+        let Some(position) = notes.iter().position(|&i| i == note) else {
+            return [None, None];
+        };
+        [
+            position.checked_sub(1).map(|i| notes[i]),
+            notes.get(position + 1).copied(),
+        ]
+    }
+
+    fn lyric_editor(&mut self, ui: &mut egui::Ui, note: usize) {
+        use libreomr::model::{Lyric, LyricPlacement, Syllabic};
+        ui.separator();
+        let mut lyrics: Vec<_> = self
+            .page
+            .score
+            .lyrics
+            .iter()
+            .filter(|l| l.note == note)
+            .cloned()
+            .collect();
+        lyrics.sort_by_key(|l| (l.placement, l.verse));
+        let active_id = ui.id().with("lyric_active_verse");
+        let focus_id = ui.id().with("lyric_focus_request");
+        let mut active_lyric = ui
+            .ctx()
+            .data(|d| d.get_temp::<(u16, LyricPlacement)>(active_id))
+            .filter(|v| lyrics.iter().any(|l| (l.verse, l.placement) == *v))
+            .unwrap_or_else(|| {
+                lyrics
+                    .first()
+                    .map_or((1, LyricPlacement::Below), |l| (l.verse, l.placement))
+            });
+        let neighbors = self.lyric_neighbors(note, active_lyric.0, active_lyric.1);
+        let mut navigate = None;
+        let mut add = false;
+        ui.horizontal(|ui| {
+            ui.label(i18n::tr("Lyrics"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                add = ui
+                    .small_button("+")
+                    .on_hover_text(i18n::tr("Add verse"))
+                    .clicked();
+                if ui
+                    .add_enabled(neighbors[1].is_some(), egui::Button::new(">"))
+                    .on_hover_text(i18n::tr("Next syllable"))
+                    .clicked()
+                {
+                    navigate = neighbors[1];
+                }
+                if ui
+                    .add_enabled(neighbors[0].is_some(), egui::Button::new("<"))
+                    .on_hover_text(i18n::tr("Previous syllable"))
+                    .clicked()
+                {
+                    navigate = neighbors[0];
+                }
+            });
+        });
+        let mut changed = false;
+        let mut remove = None;
+        for (index, lyric) in lyrics.iter_mut().enumerate() {
+            ui.push_id(("verse", note, lyric.verse, lyric.placement), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [22.0, 20.0],
+                        egui::Label::new(format!(
+                            "{}{}.",
+                            if lyric.placement == LyricPlacement::Above {
+                                "\u{2191}"
+                            } else {
+                                ""
+                            },
+                            lyric.verse
+                        )),
+                    )
+                    .on_hover_text(i18n::tr("Verse: ").to_owned() + &lyric.verse.to_string());
+                    let response = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut lyric.text)
+                                .desired_width((ui.available_width() - 36.0).max(40.0)),
+                        )
+                        .on_hover_text(i18n::tr(
+                            "Enter: next syllable; Shift+Enter: previous syllable",
+                        ));
+                    changed |= response.changed();
+                    if response.has_focus() {
+                        active_lyric = (lyric.verse, lyric.placement);
+                    }
+                    if ui
+                        .ctx()
+                        .data(|d| d.get_temp::<(usize, u16, LyricPlacement)>(focus_id))
+                        == Some((note, lyric.verse, lyric.placement))
+                    {
+                        response.request_focus();
+                        response.scroll_to_me(Some(egui::Align::Center));
+                        active_lyric = (lyric.verse, lyric.placement);
+                        ui.ctx()
+                            .data_mut(|d| d.remove::<(usize, u16, LyricPlacement)>(focus_id));
+                    }
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        active_lyric = (lyric.verse, lyric.placement);
+                        navigate = self.lyric_neighbors(note, lyric.verse, lyric.placement)
+                            [usize::from(!ui.input(|i| i.modifiers.shift))];
+                        if navigate.is_none() {
+                            response.request_focus();
+                        }
+                    }
+                    let options = ui.button("...").on_hover_text(i18n::tr("Syllable options"));
+                    egui::Popup::menu(&options)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            ui.set_min_width(195.0);
+                            ui.horizontal(|ui| {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut lyric.placement,
+                                        LyricPlacement::Below,
+                                        i18n::tr("Below staff"),
+                                    )
+                                    .changed();
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut lyric.placement,
+                                        LyricPlacement::Above,
+                                        i18n::tr("Above staff"),
+                                    )
+                                    .changed();
+                            });
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut lyric.verse)
+                                        .range(1..=99)
+                                        .prefix(i18n::tr("Verse: ")),
+                                )
+                                .changed();
+                            let mut label = lyric.verse_label.clone().unwrap_or_default();
+                            ui.label(i18n::tr("Printed verse label"));
+                            if ui.text_edit_singleline(&mut label).changed() {
+                                lyric.verse_label =
+                                    (!label.trim().is_empty()).then(|| label.trim().to_owned());
+                                changed = true;
+                            }
+                            let positions = [
+                                (Syllabic::Single, "Whole word"),
+                                (Syllabic::Begin, "Word start"),
+                                (Syllabic::Middle, "Word middle"),
+                                (Syllabic::End, "Word end"),
+                            ];
+                            egui::ComboBox::from_id_salt("syllabic")
+                                .selected_text(i18n::tr(
+                                    positions
+                                        .iter()
+                                        .find(|(kind, _)| *kind == lyric.syllabic)
+                                        .unwrap()
+                                        .1,
+                                ))
+                                .show_ui(ui, |ui| {
+                                    for (kind, label) in positions {
+                                        changed |= ui
+                                            .selectable_value(
+                                                &mut lyric.syllabic,
+                                                kind,
+                                                i18n::tr(label),
+                                            )
+                                            .changed();
+                                    }
+                                });
+                            changed |= ui
+                                .checkbox(&mut lyric.extend, i18n::tr("Extend syllable"))
+                                .changed();
+                            changed |= ui
+                                .checkbox(&mut lyric.confirmed, i18n::tr("Reviewed"))
+                                .changed();
+                            if ui.button(i18n::tr("Delete syllable")).clicked() {
+                                remove = Some(index);
+                                ui.close();
+                            }
+                        });
+                });
+            });
+        }
+        if let Some(index) = remove {
+            lyrics.remove(index);
+            changed = true;
+        }
+        if add
+            && let Some(verse) = (1..=99).find(|v| {
+                !lyrics
+                    .iter()
+                    .any(|l| l.verse == *v && l.placement == LyricPlacement::Below)
+            })
+        {
+            lyrics.push(Lyric {
+                placement: Default::default(),
+                note,
+                verse,
+                verse_label: None,
+                text: String::new(),
+                syllabic: Syllabic::Single,
+                extend: false,
+                confirmed: false,
+                bounds: None,
+            });
+            changed = true;
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(focus_id, (note, verse, LyricPlacement::Below)));
+        }
+        // Keep a unique syllable for each verse/note/placement combination.
+        let mut verses = std::collections::HashSet::new();
+        if changed && lyrics.iter().all(|l| verses.insert((l.verse, l.placement))) {
+            self.snapshot();
+            self.page.score.lyrics.retain(|l| l.note != note);
+            self.page.score.lyrics.extend(lyrics);
+        }
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(active_id, active_lyric));
+        if let Some(next) = navigate {
+            self.select_object(Some(Object::Note(next)));
+            self.page.inspector_section = InspectorSection::Lyrics;
+            self.page.reveal_selection = true;
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(focus_id, (next, active_lyric.0, active_lyric.1)));
+        }
+    }
+
     fn load_source(source: ImportSource, reporter: &JobReporter) -> Result<Loaded, String> {
         let page = match source {
             ImportSource::File(path) => {
@@ -1932,8 +2436,14 @@ impl App {
         };
         reporter.send(JobEvent::Status(i18n::tr("Load and rasterize page")));
         let image = page.render()?;
-        let image = reporter.straighten(image);
-        let score = reporter.recognize(&image);
+        let text = page.text();
+        // Positioned PDF text and image must keep the same transform.
+        let image = if text.is_empty() {
+            reporter.straighten(image)
+        } else {
+            image
+        };
+        let score = reporter.recognize_with_text(&image, text)?;
         Ok(Loaded::single(image, score, page.name()))
     }
 
@@ -2218,6 +2728,20 @@ impl App {
             } else if shortcut(egui::Key::Z, egui::Modifiers::COMMAND) {
                 self.undo();
             }
+            if shortcut(egui::Key::A, egui::Modifiers::COMMAND)
+                || shortcut(egui::Key::A, egui::Modifiers::CTRL)
+            {
+                let objects: Vec<_> = self
+                    .ordered_objects()
+                    .into_iter()
+                    .filter(|object| {
+                        !self.only_current_staff
+                            || self.object_staff(*object) == self.page.selected_staff
+                    })
+                    .collect();
+                self.select_object(objects.last().copied());
+                self.page.selection = objects;
+            }
             if shortcut(egui::Key::F6, egui::Modifiers::NONE) {
                 self.next_unchecked();
             }
@@ -2292,7 +2816,7 @@ impl App {
     }
 
     fn apply_edit_shortcut(&mut self, command: EditShortcut) {
-        if self.page.selection.len() > 1 {
+        if !self.page_busy() && self.page.selection.len() > 1 {
             let edit = match command {
                 EditShortcut::Duration(value) => selection::BatchEdit::Duration(value),
                 EditShortcut::Dots(value) => selection::BatchEdit::Dots(value),
@@ -2302,61 +2826,143 @@ impl App {
             self.apply_batch_edit(edit);
             return;
         }
-        let Some(object) = self.page.selected_object else {
+        let objects = self.selected_objects();
+        if objects.is_empty() || self.page_busy() {
             return;
-        };
-        match (object, command) {
-            (_, EditShortcut::Delete) => self.delete_object(object),
-            (Object::Note(index), command) => {
-                let Some(original) = self.page.score.notes.get(index) else {
-                    return;
-                };
-                let mut note = original.clone();
-                match command {
-                    EditShortcut::Duration(duration) => note.duration = duration,
-                    EditShortcut::Dots(dots) => note.dots = dots,
-                    EditShortcut::Accidental(accidental) => {
-                        note.accidental = accidental;
-                        note.accidental_explicit = true;
-                    }
-                    EditShortcut::Delete => unreachable!(),
-                }
-                if (
-                    note.duration,
-                    note.dots,
-                    note.accidental,
-                    note.accidental_explicit,
-                ) != (
-                    original.duration,
-                    original.dots,
-                    original.accidental,
-                    original.accidental_explicit,
-                ) {
-                    self.snapshot();
-                    self.page.score.notes[index] = note;
-                    self.page.score.recompute_accidentals();
-                }
-            }
-            (Object::Rest(index), command) => {
-                let Some(original) = self.page.score.rests.get(index) else {
-                    return;
-                };
-                if original.measures.is_some() {
-                    return;
-                }
-                let mut rest = original.clone();
-                match command {
-                    EditShortcut::Duration(duration) => rest.duration = duration,
-                    EditShortcut::Dots(dots) => rest.dots = dots,
-                    _ => return,
-                }
-                if (rest.duration, rest.dots) != (original.duration, original.dots) {
-                    self.snapshot();
-                    self.page.score.rests[index] = rest;
-                }
-            }
-            _ => {}
         }
+        if matches!(command, EditShortcut::Delete) {
+            self.delete_selection();
+            return;
+        }
+        let mut score = self.page.score.clone();
+        let mut changed = false;
+        for object in objects {
+            match object {
+                Object::Note(i) => {
+                    let Some(note) = score.notes.get_mut(i) else {
+                        continue;
+                    };
+                    match command {
+                        EditShortcut::Duration(value) => {
+                            changed |= note.duration != value;
+                            note.duration = value;
+                        }
+                        EditShortcut::Dots(value) => {
+                            changed |= note.dots != value;
+                            note.dots = value;
+                        }
+                        EditShortcut::Accidental(value) => {
+                            changed |= note.accidental != value || !note.accidental_explicit;
+                            note.accidental = value;
+                            note.accidental_explicit = true;
+                        }
+                        EditShortcut::Delete => unreachable!(),
+                    }
+                }
+                Object::Rest(i) => {
+                    let Some(rest) = score.rests.get_mut(i).filter(|r| r.measures.is_none()) else {
+                        continue;
+                    };
+                    match command {
+                        EditShortcut::Duration(value) => {
+                            changed |= rest.duration != value;
+                            rest.duration = value;
+                        }
+                        EditShortcut::Dots(value) => {
+                            changed |= rest.dots != value;
+                            rest.dots = value;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        if changed {
+            self.snapshot();
+            self.page.score = score;
+            self.page.score.recompute_accidentals();
+        }
+    }
+
+    fn delete_selection(&mut self) {
+        let mut objects = self.selected_objects();
+        if objects.is_empty() || self.page_busy() {
+            return;
+        }
+        objects.sort_by_key(|o| {
+            (
+                match o {
+                    Object::Span(_) => 0,
+                    Object::Note(_) => 2,
+                    _ => 1,
+                },
+                std::cmp::Reverse(match *o {
+                    Object::Note(i)
+                    | Object::Rest(i)
+                    | Object::Barline(i)
+                    | Object::Span(i)
+                    | Object::KeyChange(i)
+                    | Object::TimeChange(i)
+                    | Object::Dynamic(i)
+                    | Object::RepeatMark(i) => i,
+                }),
+            )
+        });
+        self.snapshot();
+        for object in objects {
+            match object {
+                Object::Note(i) => {
+                    self.page.score.remove_note(i);
+                }
+                Object::Rest(i) => {
+                    self.page.score.rests.remove(i);
+                }
+                Object::Barline(i) => {
+                    self.page.score.barlines.remove(i);
+                }
+                Object::Span(i) => {
+                    self.page.score.spans.remove(i);
+                }
+                Object::KeyChange(i) => {
+                    self.page.score.key_changes.remove(i);
+                }
+                Object::TimeChange(i) => {
+                    self.page.score.time_changes.remove(i);
+                }
+                Object::Dynamic(i) => {
+                    self.page.score.dynamics.remove(i);
+                }
+                Object::RepeatMark(i) => {
+                    self.page.score.repeat_marks.remove(i);
+                }
+            }
+        }
+        self.page.score.recompute_accidentals();
+        self.close_details();
+    }
+
+    fn assign_voice(&mut self, voice: u8) {
+        if voice == 0 || self.page_busy() {
+            return;
+        }
+        let objects = self.selected_objects();
+        let changed = objects.iter().any(|o| match *o {
+            Object::Note(i) => self.page.score.notes[i].voice != voice,
+            Object::Rest(i) => self.page.score.rests[i].voice != voice,
+            _ => false,
+        });
+        if changed {
+            self.snapshot();
+            for object in objects {
+                match object {
+                    Object::Note(i) => self.page.score.notes[i].voice = voice,
+                    Object::Rest(i) => self.page.score.rests[i].voice = voice,
+                    _ => {}
+                }
+            }
+        }
+        self.page.active_voice = voice;
     }
 
     fn shortcut_help(ui: &mut egui::Ui) {
@@ -2558,9 +3164,14 @@ impl App {
                                 ui.close();
                                 let image = self.page.image.clone();
                                 let name = self.page.name.clone();
+                                let text = self.page.score.source_text.clone();
                                 self.start_job(context, JobMode::ReplacePage, move |reporter| {
-                                    let image = reporter.straighten(image);
-                                    let score = reporter.recognize(&image);
+                                    let image = if text.is_empty() {
+                                        reporter.straighten(image)
+                                    } else {
+                                        image
+                                    };
+                                    let score = reporter.recognize_with_text(&image, text)?;
                                     Ok(Loaded::single(image, score, name))
                                 });
                             }
@@ -2652,7 +3263,11 @@ impl App {
         let inherited_meter = self.inherited_time_signature();
         egui::TopBottomPanel::bottom("recognition_preview")
             .resizable(true)
-            .default_height(160.0)
+            .default_height(if self.page.score.staff_assignments.is_empty() {
+                160.0
+            } else {
+                320.0
+            })
             .min_height(110.0)
             .max_height(
                 (context.content_rect().height() * if self.problems.show { 0.25 } else { 0.5 })
@@ -2660,10 +3275,7 @@ impl App {
             )
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong(i18n::format(
-                        "Preview - Staff {0}",
-                        &[("0", format!("{}", self.page.selected_staff + 1))],
-                    ));
+                    ui.strong(i18n::tr("Score preview"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .button("\u{00d7}")
@@ -2672,22 +3284,24 @@ impl App {
                         {
                             self.show_preview = false;
                         }
+                        if ui
+                            .button("+")
+                            .on_hover_text(i18n::tr("Zoom preview in"))
+                            .clicked()
+                        {
+                            self.page.preview.zoom_by(1.25);
+                        }
+                        if ui
+                            .button("-")
+                            .on_hover_text(i18n::tr("Zoom preview out"))
+                            .clicked()
+                        {
+                            self.page.preview.zoom_by(0.8);
+                        }
                         ui.toggle_value(&mut self.page.preview.fit_width, icons::ARROWS_HORIZONTAL)
-                            .on_hover_text(i18n::tr(
-                                "Fit preview horizontally (off: original size)",
-                            ));
+                            .on_hover_text(i18n::tr("Fit preview width"));
                     });
                 });
-                self.page.preview.additional_selection = self
-                    .page
-                    .selection
-                    .iter()
-                    .filter_map(|object| match *object {
-                        Object::Note(i) => Some(crate::preview::Selection::Note(i)),
-                        Object::Rest(i) => Some(crate::preview::Selection::Rest(i)),
-                        _ => None,
-                    })
-                    .collect();
                 let selected = self
                     .page
                     .selected
@@ -2712,26 +3326,58 @@ impl App {
                         }
                         _ => None,
                     });
-                if let Some(selection) = self.page.preview.show_with_inherited(
+                self.page.preview.selection = self
+                    .selected_objects()
+                    .into_iter()
+                    .map(|object| match object {
+                        Object::Note(i) => crate::preview::Selection::Note(i),
+                        Object::Rest(i) => crate::preview::Selection::Rest(i),
+                        Object::Span(i) => crate::preview::Selection::Span(i),
+                        Object::Barline(i) => crate::preview::Selection::Barline(i),
+                        Object::KeyChange(i) => crate::preview::Selection::KeyChange(i),
+                        Object::TimeChange(i) => crate::preview::Selection::TimeChange(i),
+                        Object::Dynamic(i) => crate::preview::Selection::Dynamic(i),
+                        Object::RepeatMark(i) => crate::preview::Selection::RepeatMark(i),
+                    })
+                    .collect();
+                let selection = self.page.preview.show_document(
                     ui,
                     &self.page.score,
                     self.page.selected_staff,
                     selected,
                     inherited_meter,
-                ) {
-                    let object = match selection {
-                        crate::preview::Selection::Note(i) => Object::Note(i),
-                        crate::preview::Selection::Rest(i) => Object::Rest(i),
-                        crate::preview::Selection::KeyChange(i) => Object::KeyChange(i),
-                        crate::preview::Selection::TimeChange(i) => Object::TimeChange(i),
-                        crate::preview::Selection::Dynamic(i) => Object::Dynamic(i),
-                        crate::preview::Selection::RepeatMark(i) => Object::RepeatMark(i),
-                        crate::preview::Selection::Barline(i) => Object::Barline(i),
-                        crate::preview::Selection::Span(i) => Object::Span(i),
-                    };
-                    self.select_with_modifiers(Some(object), ui.input(|input| input.modifiers));
+                );
+                let anchor_edit = self.page.preview.take_anchor_edit();
+                if let Some(selection) = selection {
+                    match selection {
+                        crate::preview::Selection::Note(index) => {
+                            self.click_object(Some(Object::Note(index)), ui.input(|i| i.modifiers));
+                        }
+                        crate::preview::Selection::Rest(index) => {
+                            self.click_object(Some(Object::Rest(index)), ui.input(|i| i.modifiers));
+                        }
+                        crate::preview::Selection::KeyChange(index) => self.click_object(
+                            Some(Object::KeyChange(index)),
+                            ui.input(|i| i.modifiers),
+                        ),
+                        crate::preview::Selection::TimeChange(index) => self.click_object(
+                            Some(Object::TimeChange(index)),
+                            ui.input(|i| i.modifiers),
+                        ),
+                        crate::preview::Selection::Dynamic(index) => self
+                            .click_object(Some(Object::Dynamic(index)), ui.input(|i| i.modifiers)),
+                        crate::preview::Selection::RepeatMark(index) => self.click_object(
+                            Some(Object::RepeatMark(index)),
+                            ui.input(|i| i.modifiers),
+                        ),
+                        crate::preview::Selection::Barline(index) => self
+                            .click_object(Some(Object::Barline(index)), ui.input(|i| i.modifiers)),
+                        crate::preview::Selection::Span(index) => {
+                            self.click_object(Some(Object::Span(index)), ui.input(|i| i.modifiers))
+                        }
+                    }
                 }
-                if let Some(edit) = self.page.preview.take_anchor_edit() {
+                if let Some(edit) = anchor_edit {
                     self.apply_preview_anchor_edit(edit);
                 }
             });
@@ -2744,6 +3390,7 @@ impl App {
                     let Some(span) = self.page.score.spans.get(index) else {
                         return;
                     };
+                    let span = self.page.score.resolved_span(span);
                     (
                         DragTarget::Anchor(index, edit.right),
                         Vec2::from(if edit.right { span.end } else { span.start }),
@@ -2955,6 +3602,8 @@ impl App {
                 {
                     changes.remove(index);
                     self.page.selected_object = None;
+                    self.page.selection.clear();
+                    self.page.selection_anchor = None;
                     changed = true;
                 }
             });
@@ -2998,7 +3647,13 @@ impl App {
         let Some(staff) = self.page.score.staves.get(self.page.selected_staff) else {
             return;
         };
-        let mut spans = self.page.score.spans.clone();
+        let mut spans: Vec<_> = self
+            .page
+            .score
+            .spans
+            .iter()
+            .map(|s| self.page.score.resolved_span(s))
+            .collect();
         let mut changed = false;
         let gap = staff.spacing();
         ui.push_id(("spans", self.page.selected_staff), |ui| {
@@ -3020,6 +3675,8 @@ impl App {
                                         .selectable_value(&mut span.kind, kind, kind.label())
                                         .changed()
                                     {
+                                        span.continuation = None;
+                                        span.wedge_openings = None;
                                         if matches!(
                                             kind,
                                             SpanKind::Crescendo | SpanKind::Decrescendo
@@ -3039,12 +3696,17 @@ impl App {
                         }
                     });
                     let gabel = matches!(span.kind, SpanKind::Crescendo | SpanKind::Decrescendo);
+                    if !gabel && ui.button(i18n::tr("Flip bow")).clicked() {
+                        span.flip();
+                        changed = true;
+                    }
                     ui.label(if gabel {
                         i18n::tr("Opening")
                     } else {
                         i18n::tr("Curvature")
                     });
-                    changed |= ui
+                    let previous_height = span.height;
+                    let curvature_changed = ui
                         .add(
                             egui::DragValue::new(&mut span.height)
                                 .range(if gabel {
@@ -3055,8 +3717,28 @@ impl App {
                                 .speed(0.5),
                         )
                         .changed();
+                    if curvature_changed && let Some(c) = &mut span.continuation {
+                        let factor = if previous_height.abs() > 0.001 {
+                            span.height / previous_height
+                        } else {
+                            1.0
+                        };
+                        c.exit_height = if previous_height.abs() > 0.001 {
+                            c.exit_height * factor
+                        } else {
+                            span.height / gap
+                        };
+                        c.entry_height = if previous_height.abs() > 0.001 {
+                            c.entry_height * factor
+                        } else {
+                            span.height / gap
+                        };
+                    }
+                    changed |= curvature_changed;
                     ui.strong(i18n::tr("Anchor"));
-                    ui.weak(i18n::tr("Drag endpoints in the scan or preview."));
+                    ui.weak(i18n::tr(
+                        "Drag endpoints onto notes or select the notes below.",
+                    ));
                     let mut anchors_changed = false;
                     for right in [false, true] {
                         ui.label(if right {
@@ -3064,10 +3746,98 @@ impl App {
                         } else {
                             i18n::tr("Start")
                         });
-                        let (minimum, maximum) = if right {
-                            (span.start[0] + 1.0, staff.right)
+                        {
+                            let current = if right {
+                                &span.end_anchor
+                            } else {
+                                &span.start_anchor
+                            };
+                            let label = |index: usize| {
+                                let note = &self.page.score.notes[index];
+                                i18n::format(
+                                    "Staff {staff}, note {note}: {pitch}",
+                                    &[
+                                        ("staff", (note.staff + 1).to_string()),
+                                        ("note", (index + 1).to_string()),
+                                        ("pitch", note.pitch_label()),
+                                    ],
+                                )
+                            };
+                            let mut choice = current.as_ref().map(|a| a.note);
+                            egui::ComboBox::from_id_salt(("note_anchor", right))
+                                .selected_text(
+                                    choice.map_or_else(
+                                        || i18n::tr("Free endpoint").to_string(),
+                                        label,
+                                    ),
+                                )
+                                .show_ui(ui, |ui| {
+                                    let rows = self.page.score.bow_staves(span.staff);
+                                    let mut notes: Vec<_> = self
+                                        .page
+                                        .score
+                                        .notes
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, n)| rows.contains(&n.staff))
+                                        .collect();
+                                    notes.sort_by(|a, b| {
+                                        a.1.staff
+                                            .cmp(&b.1.staff)
+                                            .then(a.1.x.total_cmp(&b.1.x))
+                                            .then(a.1.y.total_cmp(&b.1.y))
+                                    });
+                                    for (note, _) in notes {
+                                        let mut proposal = span.clone();
+                                        if self.page.score.attach_span_note(
+                                            &mut proposal,
+                                            right,
+                                            note,
+                                        ) {
+                                            ui.selectable_value(
+                                                &mut choice,
+                                                Some(note),
+                                                label(note),
+                                            );
+                                        }
+                                    }
+                                });
+                            if choice != current.as_ref().map(|a| a.note)
+                                && let Some(note) = choice
+                            {
+                                changed |= self.page.score.attach_span_note(span, right, note);
+                            }
+                        }
+                        let endpoint_staff = if right {
+                            span.end_anchor
+                                .as_ref()
+                                .map_or(span.staff, |a| self.page.score.notes[a.note].staff)
                         } else {
-                            (staff.left, span.end[0] - 1.0)
+                            span.staff
+                        };
+                        let endpoint_staff = &self.page.score.staves[endpoint_staff];
+                        let crosses = span
+                            .end_anchor
+                            .as_ref()
+                            .is_some_and(|a| self.page.score.notes[a.note].staff != span.staff);
+                        let (minimum, maximum) = if right {
+                            (
+                                if crosses {
+                                    endpoint_staff.left
+                                } else {
+                                    span.start[0] + 1.0
+                                },
+                                endpoint_staff.right,
+                            )
+                        } else {
+                            (
+                                endpoint_staff.left,
+                                if crosses {
+                                    endpoint_staff.right
+                                } else {
+                                    span.end[0] - 1.0
+                                },
+                            )
                         };
                         let point = if right {
                             &mut span.end
@@ -3094,6 +3864,15 @@ impl App {
                                 )
                                 .changed();
                         });
+                        let anchor = if right {
+                            &mut span.end_anchor
+                        } else {
+                            &mut span.start_anchor
+                        };
+                        if let Some(anchor) = anchor {
+                            let note = &self.page.score.notes[anchor.note];
+                            anchor.offset = [point[0] - note.x, point[1] - note.y];
+                        }
                     }
                     if anchors_changed {
                         span.confirmed = true;
@@ -3102,73 +3881,148 @@ impl App {
                     changed |= ui
                         .checkbox(&mut span.confirmed, i18n::tr("Reviewed"))
                         .changed();
-                    span.start[0] = span.start[0].min(staff.right - 1.0);
-                    span.end[0] = span.end[0].max(span.start[0] + 1.0);
+                    if span.start_anchor.is_none() && span.end_anchor.is_none() {
+                        span.start[0] = span.start[0].min(staff.right - 1.0);
+                        span.end[0] = span.end[0].max(span.start[0] + 1.0);
+                    }
                     ui.separator();
                 });
             }
             if let Some(index) = remove {
                 spans.remove(index);
                 self.page.selected_object = None;
+                self.page.selection.clear();
+                self.page.selection_anchor = None;
                 changed = true;
             }
         });
         if changed {
             self.snapshot();
             self.page.score.spans = spans;
+            self.page.score.recompute_accidentals();
+            if let Some(Object::Span(index)) = self.page.selected_object {
+                self.page.selected_staff = self.page.score.spans[index].staff;
+            }
         }
     }
 
     fn add_span(&mut self, kind: SpanKind) {
-        let Some(staff) = self.page.score.staves.get(self.page.selected_staff) else {
+        let gabel = matches!(kind, SpanKind::Crescendo | SpanKind::Decrescendo);
+        let mut chosen: Vec<_> = self
+            .page
+            .selection
+            .iter()
+            .filter_map(|o| {
+                if let Object::Note(i) = o {
+                    Some(*i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        chosen.sort_by(|&a, &b| {
+            self.page.score.notes[a]
+                .staff
+                .cmp(&self.page.score.notes[b].staff)
+                .then(
+                    self.page.score.notes[a]
+                        .x
+                        .total_cmp(&self.page.score.notes[b].x),
+                )
+        });
+        let first = if chosen.len() >= 2 {
+            chosen.first().copied()
+        } else {
+            self.page.selected
+        }
+        .or_else(|| {
+            self.page
+                .score
+                .notes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.staff == self.page.selected_staff)
+                .min_by(|a, b| a.1.x.total_cmp(&b.1.x))
+                .map(|(i, _)| i)
+        });
+        let last = if chosen.len() >= 2 {
+            chosen.last().copied()
+        } else {
+            first.and_then(|first| {
+                self.page
+                    .score
+                    .notes
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, n)| {
+                        n.staff == self.page.score.notes[first].staff
+                            && self.page.score.bow_note_order(first, *i)
+                    })
+                    .min_by(|a, b| a.1.x.total_cmp(&b.1.x))
+                    .map(|(i, _)| i)
+            })
+        };
+        let staff_index =
+            first.map_or(self.page.selected_staff, |i| self.page.score.notes[i].staff);
+        let Some(staff) = self.page.score.staves.get(staff_index) else {
             return;
         };
         let gap = staff.spacing();
-        let mut notes: Vec<_> = self
-            .page
-            .score
-            .notes
-            .iter()
-            .filter(|note| note.staff == self.page.selected_staff)
-            .collect();
-        notes.sort_by(|first, second| first.x.total_cmp(&second.x));
-        let first = self
-            .page
-            .selected
-            .and_then(|index| self.page.score.notes.get(index))
-            .filter(|note| note.staff == self.page.selected_staff)
-            .or_else(|| notes.first().copied());
-        let last = first.and_then(|first| {
-            notes
-                .iter()
-                .find(|note| note.x > first.x + gap * 0.3)
-                .copied()
+        let start_x = first.map_or(staff.left + (staff.right - staff.left) * 0.25, |i| {
+            self.page.score.notes[i].x
         });
-        let start_x = first.map_or(staff.left + (staff.right - staff.left) * 0.25, |note| {
-            note.x
+        let end_x = last.map_or((start_x + gap * 4.0).min(staff.right), |i| {
+            self.page.score.notes[i].x
         });
-        let end_x = last.map_or((start_x + gap * 4.0).min(staff.right), |note| note.x);
-        if end_x <= start_x {
+        let end_staff = last.map_or(staff_index, |i| self.page.score.notes[i].staff);
+        if end_staff == staff_index && end_x <= start_x {
             return;
         }
-        let gabel = matches!(kind, SpanKind::Crescendo | SpanKind::Decrescendo);
+        if end_staff != staff_index
+            && !first
+                .zip(last)
+                .is_some_and(|(a, b)| self.page.score.bow_note_order(a, b))
+        {
+            return;
+        }
+        let endpoint = |i: usize| {
+            let note = &self.page.score.notes[i];
+            libreomr::model::NoteAnchor {
+                note: i,
+                offset: [
+                    0.0,
+                    if gabel {
+                        let row = &self.page.score.staves[note.staff];
+                        row.lines[4] + row.spacing() * 2.0 - note.y
+                    } else {
+                        -self.page.score.staves[note.staff].spacing()
+                    },
+                ],
+            }
+        };
         let span = Span {
-            staff: self.page.selected_staff,
+            staff: staff_index,
             kind,
+            start_anchor: first.map(endpoint),
+            end_anchor: last.map(endpoint),
+            continuation: None,
+            wedge_openings: None,
             start: [
                 start_x,
                 if gabel {
                     staff.lines[4] + gap * 2.0
                 } else {
-                    first.map_or(staff.lines[0], |note| note.y) - gap
+                    first.map_or(staff.lines[0], |i| self.page.score.notes[i].y) - gap
                 },
             ],
             end: [
                 end_x,
                 if gabel {
-                    staff.lines[4] + gap * 2.0
+                    let row = &self.page.score.staves[end_staff];
+                    row.lines[4] + row.spacing() * 2.0
                 } else {
-                    last.map_or(staff.lines[0], |note| note.y) - gap
+                    last.map_or(staff.lines[0], |i| self.page.score.notes[i].y)
+                        - self.page.score.staves[end_staff].spacing()
                 },
             ],
             height: if gabel { gap * 0.5 } else { -gap },
@@ -3176,6 +4030,7 @@ impl App {
         };
         self.snapshot();
         self.page.score.spans.push(span);
+        self.page.score.recompute_accidentals();
         self.select_object(Some(Object::Span(self.page.score.spans.len() - 1)));
     }
 
@@ -3357,8 +4212,7 @@ impl App {
             }
         };
         let confirmed = self.is_confirmed(object);
-        let selected =
-            self.page.selected_object == Some(object) || self.page.selection.contains(&object);
+        let selected = self.object_selected(object);
         let palette = crate::theme::palette(ui.visuals().dark_mode);
         ui.push_id(("object", object), |ui| {
             ui.horizontal(|ui| {
@@ -3445,6 +4299,17 @@ impl App {
 
     fn object_list(&mut self, ui: &mut egui::Ui) {
         let objects = self.ordered_objects();
+        let expanded_id = ui.id().with(("expanded_object_staff", self.page.id));
+        let mut expanded = ui
+            .data(|data| data.get_temp::<Option<usize>>(expanded_id))
+            .unwrap_or(Some(self.page.selected_staff));
+        if self.page.reveal_selection
+            || (self.only_current_staff
+                && expanded.is_some_and(|staff| staff != self.page.selected_staff))
+        {
+            expanded = Some(self.page.selected_staff);
+        }
+        let visible_staff = expanded;
         for staff in 0..self.page.score.staves.len() {
             if self.only_current_staff && staff != self.page.selected_staff {
                 continue;
@@ -3463,22 +4328,31 @@ impl App {
                     Object::RepeatMark(index) => self.page.score.repeat_marks[index].staff == staff,
                 })
                 .collect();
-            egui::CollapsingHeader::new(i18n::format(
+            let response = egui::CollapsingHeader::new(i18n::format(
                 "Staff {0} ({1})",
                 &[
                     ("0", format!("{}", staff + 1)),
                     ("1", format!("{}", row.len())),
                 ],
             ))
-            .id_salt(("objects_staff", staff))
-            .default_open(staff == self.page.selected_staff)
-            .open((self.page.reveal_selection && staff == self.page.selected_staff).then_some(true))
+            .id_salt(("objects_staff", self.page.id, staff))
+            .open(Some(visible_staff == Some(staff)))
             .show(ui, |ui| {
-                for object in row {
-                    self.object_row(ui, object);
+                if visible_staff == Some(staff) {
+                    for object in row {
+                        self.object_row(ui, object);
+                    }
                 }
             });
+            if response.header_response.clicked() {
+                expanded = if visible_staff == Some(staff) {
+                    None
+                } else {
+                    Some(staff)
+                };
+            }
         }
+        ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
     }
 
     fn object_preview(&mut self, ui: &mut egui::Ui) {
@@ -3503,7 +4377,7 @@ impl App {
                 i18n::tr("Unreviewed")
             });
         });
-        let height = (ui.available_height() * 0.28).clamp(100.0, 160.0);
+        let height = (ui.available_height() * 0.22).clamp(80.0, 120.0);
         ui.push_id("selected_object_preview", |ui| {
             self.page
                 .preview
@@ -3520,16 +4394,534 @@ impl App {
     }
 
     fn dot_editor(ui: &mut egui::Ui, dots: &mut u8) -> bool {
-        let changed = ui
-            .add(
-                egui::DragValue::new(dots)
-                    .range(0..=2)
-                    .prefix(i18n::tr("Dots: ")),
+        ui.add(
+            egui::DragValue::new(dots)
+                .range(0..=2)
+                .prefix(i18n::tr("Dots: ")),
+        )
+        .on_hover_text(i18n::tr("Dots: 0 = none, . = single, : = double"))
+        .on_hover_text(i18n::tr("Keys: . single · : double · 0 none"))
+        .changed()
+    }
+
+    fn inspector_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        section: InspectorSection,
+        title: &str,
+        content: impl FnOnce(&mut Self, &mut egui::Ui),
+    ) {
+        let open = self.page.inspector_section == section;
+        let id = ui.make_persistent_id(("inspector_section", section));
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open);
+        state.set_open(open);
+        // Snap the body to the shared selection so outgoing sections don't
+        // remain visible (or reserve space) while the next section opens.
+        ui.ctx().animate_bool_with_time(id, open, 0.0);
+        let mut clicked = false;
+        let mut header = state.show_header(ui, |ui| {
+            clicked = ui.selectable_label(open, title).clicked();
+        });
+        if clicked {
+            header.toggle();
+        }
+        let next_open = header.is_open();
+        // Apply the new selection on the next frame for all sections together.
+        header.set_open(open);
+        header.body(|ui| content(self, ui));
+        if next_open != open {
+            self.page.inspector_section = if next_open {
+                section
+            } else {
+                InspectorSection::Closed
+            };
+        }
+    }
+
+    fn inspector_details(&mut self, ui: &mut egui::Ui) {
+        if self.page.score.staves.is_empty() {
+            return;
+        }
+        self.page.selected_staff = self
+            .page
+            .selected_staff
+            .min(self.page.score.staves.len() - 1);
+        let previous_staff = self.page.selected_staff;
+        egui::ComboBox::from_id_salt("selected_staff")
+            .width(ui.available_width())
+            .selected_text(i18n::format(
+                "Staff {0}",
+                &[("0", (self.page.selected_staff + 1).to_string())],
+            ))
+            .show_ui(ui, |ui| {
+                for index in 0..self.page.score.staves.len() {
+                    ui.selectable_value(
+                        &mut self.page.selected_staff,
+                        index,
+                        i18n::format("Staff {0}", &[("0", (index + 1).to_string())]),
+                    );
+                }
+            });
+        if previous_staff != self.page.selected_staff {
+            self.select_object(None);
+            self.page.inspector_section = InspectorSection::Staff;
+            self.page.reveal_selection = true;
+        }
+        if self.problems.open_system {
+            self.page.inspector_section = InspectorSection::Staff;
+            self.problems.open_system = false;
+        }
+        self.inspector_section(
+            ui,
+            InspectorSection::Object,
+            i18n::tr("Object properties"),
+            |app, ui| {
+                if app.page.selected_object.is_none()
+                    && app.page.selected.is_none()
+                    && app.page.selected_rest.is_none()
+                {
+                    ui.weak(i18n::tr("First select an object in the scan or preview."));
+                    return;
+                }
+                app.barline_editor(ui);
+                app.key_change_editor(ui);
+                app.time_change_editor(ui);
+                app.dynamic_editor(ui);
+                app.repeat_mark_editor(ui);
+                app.span_editor(ui);
+                app.note_editor(ui);
+                app.rest_editor(ui);
+            },
+        );
+        if let Some(index) = self
+            .page
+            .selected
+            .filter(|&i| i < self.page.score.notes.len())
+        {
+            self.inspector_section(
+                ui,
+                InspectorSection::Lyrics,
+                i18n::tr("Lyrics"),
+                |app, ui| {
+                    app.lyric_editor(ui, index);
+                },
+            );
+        }
+        self.inspector_section(
+            ui,
+            InspectorSection::Staff,
+            i18n::tr("Staff information"),
+            |app, ui| {
+                app.staff_editor(ui);
+            },
+        );
+        self.inspector_section(
+            ui,
+            InspectorSection::Part,
+            i18n::tr("Part assignment"),
+            |app, ui| {
+                app.part_editor(ui);
+            },
+        );
+    }
+
+    fn staff_editor(&mut self, ui: &mut egui::Ui) {
+        let mut header = self.page.score.staves[self.page.selected_staff]
+            .header
+            .clone();
+        let previous_header = header.clone();
+        Self::inspector_combo(ui, i18n::tr("Clef"))
+            .selected_text(header.clef.label())
+            .show_ui(ui, |ui| {
+                for clef in Clef::ALL {
+                    ui.selectable_value(&mut header.clef, clef, clef.label());
+                }
+            });
+        if header.clef == Clef::Unknown {
+            ui.label(i18n::tr("Pitch reference: treble (assumed)"));
+        }
+        ui.label(i18n::tr("Key signature"));
+        egui::ComboBox::from_id_salt("key_signature")
+            .width(ui.available_width())
+            .selected_text(
+                header
+                    .key_signature
+                    .map(KeySignature::label)
+                    .unwrap_or_else(|| i18n::tr("Not recognized").into()),
             )
-            .on_hover_text(i18n::tr("Dots: 0 = none, . = single, : = double"))
-            .changed();
-        ui.small(i18n::tr("Keys: . single · : double · 0 none"));
-        changed
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut header.key_signature, None, i18n::tr("Not recognized"));
+                for fifths in -7..=7 {
+                    let key = KeySignature { fifths };
+                    ui.selectable_value(&mut header.key_signature, Some(key), key.label());
+                }
+            });
+        Self::inspector_combo(ui, i18n::tr("Time signature"))
+            .selected_text(
+                header
+                    .time_signature
+                    .map(TimeSignature::label)
+                    .unwrap_or_else(|| i18n::tr("Not recognized").into()),
+            )
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut header.time_signature, None, i18n::tr("Not recognized"));
+                for meter in [TimeSignature::Common, TimeSignature::Cut] {
+                    ui.selectable_value(&mut header.time_signature, Some(meter), meter.label());
+                }
+                if ui
+                    .selectable_label(
+                        matches!(header.time_signature, Some(TimeSignature::Meter { .. })),
+                        i18n::tr("Numeric"),
+                    )
+                    .clicked()
+                    && !matches!(header.time_signature, Some(TimeSignature::Meter { .. }))
+                {
+                    header.time_signature = Some(TimeSignature::Meter {
+                        beats: 4,
+                        beat_unit: 4,
+                    });
+                }
+            });
+        if let Some(TimeSignature::Meter { beats, beat_unit }) = &mut header.time_signature {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(beats).range(1..=32));
+                ui.label("/");
+                egui::ComboBox::from_id_salt("beat_unit")
+                    .width(64.0)
+                    .selected_text(beat_unit.to_string())
+                    .show_ui(ui, |ui| {
+                        for value in [1, 2, 4, 8, 16, 32] {
+                            ui.selectable_value(beat_unit, value, value.to_string());
+                        }
+                    });
+            });
+        }
+        ui.checkbox(
+            &mut header.confirmed,
+            i18n::tr("Staff information reviewed"),
+        );
+        if header != previous_header {
+            self.snapshot();
+            self.page
+                .score
+                .set_staff_header(self.page.selected_staff, header);
+        }
+    }
+
+    fn barline_editor(&mut self, ui: &mut egui::Ui) {
+        let mut bars = self.page.score.barlines.clone();
+        let mut changed = false;
+        ui.push_id(("barlines", self.page.selected_staff), |ui| {
+            let mut indices: Vec<_> = bars
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| self.page.selected_object == Some(Object::Barline(*index)))
+                .map(|(index, _)| index)
+                .collect();
+            indices.sort_by(|&first, &second| bars[first].x.total_cmp(&bars[second].x));
+            let mut remove = None;
+            for index in indices {
+                ui.push_id(index, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(i18n::tr("Barline"));
+                        if ui
+                            .button("\u{00d7}")
+                            .on_hover_text(i18n::tr("Delete barline"))
+                            .clicked()
+                        {
+                            remove = Some(index);
+                        }
+                    });
+                    let previous_kind = bars[index].kind;
+                    let response = egui::ComboBox::from_id_salt("barline_kind")
+                        .width(ui.available_width())
+                        .wrap_mode(egui::TextWrapMode::Wrap)
+                        .selected_text(bars[index].kind.label())
+                        .show_ui(ui, |ui| {
+                            for kind in BarlineKind::ALL {
+                                changed |= ui
+                                    .selectable_value(&mut bars[index].kind, kind, kind.label())
+                                    .changed();
+                            }
+                        });
+                    if previous_kind != bars[index].kind {
+                        response.response.scroll_to_me(None);
+                    }
+                    changed |= ui
+                        .checkbox(&mut bars[index].confirmed, i18n::tr("Reviewed"))
+                        .changed();
+                });
+            }
+            if let Some(index) = remove {
+                bars.remove(index);
+                self.page.selected_object = None;
+                self.page.selection.clear();
+                self.page.selection_anchor = None;
+                changed = true;
+            }
+        });
+        if changed {
+            self.snapshot();
+            self.page.score.barlines = bars;
+            self.page.score.recompute_accidentals();
+        }
+    }
+
+    fn note_editor(&mut self, ui: &mut egui::Ui) {
+        if let Some(index) = self
+            .page
+            .selected
+            .filter(|&index| index < self.page.score.notes.len())
+        {
+            let mut note = self.page.score.notes[index].clone();
+            ui.heading(note.pitch_label());
+            let mut changed = Self::voice_editor(ui, &mut note.voice);
+            ui.horizontal(|ui| {
+                let names = ["C", "D", "E", "F", "G", "A", "B / H"];
+                let mut degree = note.pitch.rem_euclid(7);
+                let mut octave = note.pitch.div_euclid(7);
+                egui::ComboBox::from_id_salt("pitch_name")
+                    .width(65.0)
+                    .selected_text(names[degree as usize])
+                    .show_ui(ui, |ui| {
+                        for (index, name) in names.iter().enumerate() {
+                            ui.selectable_value(&mut degree, index as i32, *name);
+                        }
+                    });
+                ui.add(
+                    egui::DragValue::new(&mut octave)
+                        .range(0..=9)
+                        .prefix(i18n::tr("Octave: ")),
+                );
+                let pitch = octave * 7 + degree;
+                changed |= pitch != note.pitch;
+                note.pitch = pitch;
+            });
+            Self::inspector_combo(ui, i18n::tr("Accidental"))
+                .selected_text(if !note.accidental_explicit {
+                    i18n::tr("Automatic")
+                } else {
+                    match note.accidental {
+                        -1 => "b",
+                        1 => "#",
+                        _ => i18n::tr("Natural"),
+                    }
+                })
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(!note.accidental_explicit, i18n::tr("Automatic"))
+                        .clicked()
+                    {
+                        note.accidental_explicit = false;
+                        changed = true;
+                    }
+                    for (value, label) in
+                        [(-1, "b  [b]"), (0, i18n::tr("Natural  [=]")), (1, "#  [#]")]
+                    {
+                        if ui
+                            .selectable_label(
+                                note.accidental_explicit && note.accidental == value,
+                                label,
+                            )
+                            .clicked()
+                        {
+                            note.accidental = value;
+                            note.accidental_explicit = true;
+                            changed = true;
+                        }
+                    }
+                });
+            Self::inspector_combo(ui, i18n::tr("Note value"))
+                .selected_text(duration_shortcut_label(note.duration))
+                .show_ui(ui, |ui| {
+                    for duration in Duration::ALL {
+                        changed |= ui
+                            .selectable_value(
+                                &mut note.duration,
+                                duration,
+                                duration_shortcut_label(duration),
+                            )
+                            .changed();
+                    }
+                });
+            changed |= Self::dot_editor(ui, &mut note.dots);
+            let options = usize::from(note.tuplet_ratio().is_some())
+                + usize::from(note.grace)
+                + usize::from(note.small)
+                + usize::from(note.articulation != Articulation::None);
+            let title = if options == 0 {
+                i18n::tr("Notation options").to_owned()
+            } else {
+                format!("{} · {options}", i18n::tr("Notation options"))
+            };
+            egui::CollapsingHeader::new(title)
+                .id_salt(("note_notation", self.page.id, index))
+                .default_open(false)
+                .show(ui, |ui| {
+                    let mut use_tuplet = note.tuplet_ratio().is_some();
+                    if ui.checkbox(&mut use_tuplet, i18n::tr("Tuplet")).changed() {
+                        note.tuplet = use_tuplet.then(Tuplet::default);
+                        note.triplet = false;
+                        changed = true;
+                    }
+                    if use_tuplet {
+                        let mut ratio = note.tuplet_ratio().unwrap_or_default();
+                        ui.horizontal_wrapped(|ui| {
+                            let actual_changed = ui
+                                .add(
+                                    egui::DragValue::new(&mut ratio.actual)
+                                        .range(2..=64)
+                                        .prefix(i18n::tr("Notes: ")),
+                                )
+                                .changed();
+                            ui.label(i18n::tr("in the time of"));
+                            let normal_changed = ui
+                                .add(egui::DragValue::new(&mut ratio.normal).range(1..=64))
+                                .changed();
+                            if actual_changed || normal_changed {
+                                note.tuplet = Some(ratio);
+                                note.triplet = false;
+                                changed = true;
+                            }
+                        });
+                        ui.small(i18n::tr("e.g. triplet 3:2, quintuplet 5:4, septuplet 7:4"));
+                    }
+                    if ui.checkbox(&mut note.grace, i18n::tr("Grace note")).on_hover_text(
+                        i18n::tr("Does not count towards measure duration. The note value determines its appearance.")
+                    ).changed() {
+                        if note.grace { note.small = true; }
+                        changed = true;
+                    }
+                    changed |= ui
+                        .checkbox(&mut note.small, i18n::tr("Small noteheads"))
+                        .changed();
+                    Self::inspector_combo(ui, i18n::tr("Articulation"))
+                        .selected_text(note.articulation.label())
+                        .show_ui(ui, |ui| {
+                            for articulation in Articulation::ALL {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut note.articulation,
+                                        articulation,
+                                        articulation.label(),
+                                    )
+                                    .changed();
+                            }
+                        });
+                })
+                .header_response
+                .on_hover_text(i18n::tr("Tuplet, grace note, small noteheads and articulation"));
+            changed |= ui
+                .checkbox(&mut note.confirmed, i18n::tr("Reviewed"))
+                .changed();
+            if changed {
+                self.snapshot();
+                if note.pitch != self.page.score.notes[index].pitch {
+                    let staff = &self.page.score.staves[note.staff];
+                    note.y = staff.y_at_pitch(note.pitch);
+                }
+                self.page.active_voice = note.voice;
+                self.page.score.notes[index] = note;
+                self.page.score.recompute_accidentals();
+            }
+            if ui
+                .button("\u{00d7}")
+                .on_hover_text(i18n::tr("Delete note (Delete / Backspace)"))
+                .clicked()
+            {
+                self.snapshot();
+                self.page.score.remove_note(index);
+                self.page.score.recompute_accidentals();
+                self.select_object(None);
+            }
+            ui.separator();
+        }
+    }
+
+    fn rest_editor(&mut self, ui: &mut egui::Ui) {
+        if let Some(index) = self
+            .page
+            .selected_rest
+            .filter(|&index| index < self.page.score.rests.len())
+        {
+            let mut rest = self.page.score.rests[index].clone();
+            let mut changed = false;
+            let remove = ui
+                .horizontal(|ui| {
+                    ui.heading(i18n::tr("Rest"));
+                    changed |= Self::voice_editor(ui, &mut rest.voice);
+                    ui.button("\u{00d7}")
+                        .on_hover_text(i18n::tr("Delete rest (Delete / Backspace)"))
+                        .clicked()
+                })
+                .inner;
+            let mut multiple = rest.measures.is_some();
+            if ui
+                .checkbox(&mut multiple, i18n::tr("Multimeasure rest"))
+                .changed()
+            {
+                rest.measures = multiple.then_some(2);
+                if multiple {
+                    rest.duration = Duration::Whole;
+                    rest.dots = 0;
+                    rest.tuplet = None;
+                }
+                changed = true;
+            }
+            if let Some(count) = &mut rest.measures {
+                ui.horizontal(|ui| {
+                    ui.label(i18n::tr("Measures"));
+                    changed |= ui.add(egui::DragValue::new(count).range(2..=99)).changed();
+                });
+            } else {
+                Self::inspector_combo(ui, i18n::tr("Rest value"))
+                    .selected_text(duration_shortcut_label(rest.duration))
+                    .show_ui(ui, |ui| {
+                        for duration in Duration::ALL {
+                            changed |= ui
+                                .selectable_value(
+                                    &mut rest.duration,
+                                    duration,
+                                    duration_shortcut_label(duration),
+                                )
+                                .changed();
+                        }
+                    });
+                changed |= Self::dot_editor(ui, &mut rest.dots);
+            }
+            if rest.measures.is_none() {
+                let label = rest.tuplet.map_or_else(
+                    || i18n::tr("Tuplet").to_owned(),
+                    |ratio| format!("{} {}:{}", i18n::tr("Tuplet"), ratio.actual, ratio.normal),
+                );
+                ui.menu_button(label, |ui| {
+                    if let Some(ratio) = Self::rest_tuplet_editor(ui, Some(rest.tuplet)) {
+                        rest.tuplet = ratio;
+                        changed = true;
+                    }
+                });
+            }
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui
+                    .checkbox(&mut rest.fermata, i18n::tr("Fermata"))
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut rest.confirmed, i18n::tr("Reviewed"))
+                    .changed();
+            });
+            if changed {
+                self.snapshot();
+                self.page.active_voice = rest.voice;
+                self.page.score.rests[index] = rest;
+            }
+            if remove {
+                self.snapshot();
+                self.page.score.rests.remove(index);
+                self.select_object(None);
+            }
+            ui.separator();
+        }
     }
 
     fn inspector(&mut self, context: &egui::Context) {
@@ -3557,9 +4949,9 @@ impl App {
                         if !self.page.show_object_list
                             && ui
                                 .button(icons::X)
-                                .on_hover_text(
-                                    i18n::tr("Close details and return to overview (Escape)"),
-                                )
+                                .on_hover_text(i18n::tr(
+                                    "Close details and return to overview (Escape)",
+                                ))
                                 .clicked()
                         {
                             self.close_details();
@@ -3610,7 +5002,10 @@ impl App {
                         if compact_tabs {
                             icons::SLIDERS_HORIZONTAL.to_owned()
                         } else {
-                            i18n::format("{0}  Details", &[("0", icons::SLIDERS_HORIZONTAL.to_string())])
+                            i18n::format(
+                                "{0}  Details",
+                                &[("0", icons::SLIDERS_HORIZONTAL.to_string())],
+                            )
                         },
                     )
                     .on_hover_text(i18n::tr("Details"));
@@ -3624,455 +5019,39 @@ impl App {
                 if !self.page.show_object_list {
                     self.object_preview(ui);
                 }
-                egui::ScrollArea::vertical()
-                    .id_salt(("correction_scroll", self.page.show_object_list))
-                    .show(ui, |ui| {
-                        ui.add_enabled_ui(!self.page_busy(), |ui| {
-                            if self.page.show_object_list {
-                                self.object_list(ui);
+                let mut scroll = egui::ScrollArea::vertical().id_salt((
+                    "correction_scroll",
+                    self.page.id,
+                    self.page.show_object_list,
+                ));
+                if !self.page.show_object_list {
+                    let target = (
+                        self.page.id,
+                        self.page.selected_staff,
+                        self.page.selected_object,
+                        self.page.inspector_section,
+                    );
+                    let id = ui.id().with("last_inspector_target");
+                    if ui.data(|data| data.get_temp(id)) != Some(target) {
+                        scroll = scroll.vertical_scroll_offset(0.0);
+                        ui.data_mut(|data| data.insert_temp(id, target));
+                    }
+                }
+                scroll.show(ui, |ui| {
+                    ui.add_enabled_ui(!self.page_busy(), |ui| {
+                        if self.selected_objects().len() > 1 {
+                            self.selection_editor(ui);
+                            if !self.page.show_object_list {
                                 return;
                             }
-                            if self.page.selection.len() > 1 {
-                                self.selection_editor(ui);
-                                return;
-                            }
-                            if !self.page.score.staves.is_empty() {
-                                self.page.selected_staff =
-                                    self.page.selected_staff.min(self.page.score.staves.len() - 1);
-                                let previous_staff = self.page.selected_staff;
-                                egui::ComboBox::from_id_salt("selected_staff")
-                                    .selected_text(i18n::format("Staff {0}", &[("0", format!("{}", self.page.selected_staff + 1))]))
-                                    .show_ui(ui, |ui| {
-                                        for index in 0..self.page.score.staves.len() {
-                                            ui.selectable_value(
-                                                &mut self.page.selected_staff,
-                                                index,
-                                                i18n::format("Staff {0}", &[("0", format!("{}", index + 1))]),
-                                            );
-                                        }
-                                    });
-                                if previous_staff != self.page.selected_staff {
-                                    self.select_object(None);
-                                    self.page.reveal_selection = true;
-                                }
-                                egui::CollapsingHeader::new(i18n::tr("Staff information"))
-                                    .default_open(false)
-                                    .open(self.problems.open_system.then_some(true))
-                                    .show(ui, |ui| {
-                                        let mut header =
-                                            self.page.score.staves[self.page.selected_staff].header.clone();
-                                        let previous_header = header.clone();
-                                        Self::inspector_combo(ui, i18n::tr("Clef"))
-                                            .selected_text(header.clef.label())
-                                            .show_ui(ui, |ui| {
-                                                for clef in Clef::ALL {
-                                                    ui.selectable_value(
-                                                        &mut header.clef,
-                                                        clef,
-                                                        clef.label(),
-                                                    );
-                                                }
-                                            });
-                                        if header.clef == Clef::Unknown {
-                                            ui.label(i18n::tr("Pitch reference: treble (assumed)"));
-                                        }
-                                        ui.label(i18n::tr("Key signature"));
-                                        egui::ComboBox::from_id_salt("key_signature")
-                                            .width(ui.available_width())
-                                            .selected_text(
-                                                header
-                                                    .key_signature
-                                                    .map(KeySignature::label)
-                                                    .unwrap_or_else(|| i18n::tr("Not recognized").into()),
-                                            )
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(
-                                                    &mut header.key_signature,
-                                                    None,
-                                                    i18n::tr("Not recognized"),
-                                                );
-                                                for fifths in -7..=7 {
-                                                    let key = KeySignature { fifths };
-                                                    ui.selectable_value(
-                                                        &mut header.key_signature,
-                                                        Some(key),
-                                                        key.label(),
-                                                    );
-                                                }
-                                            });
-                                        Self::inspector_combo(ui, i18n::tr("Time signature"))
-                                            .selected_text(
-                                                header
-                                                    .time_signature
-                                                    .map(TimeSignature::label)
-                                                    .unwrap_or_else(|| i18n::tr("Not recognized").into()),
-                                            )
-                                            .show_ui(ui, |ui| {
-                                                ui.selectable_value(
-                                                    &mut header.time_signature,
-                                                    None,
-                                                    i18n::tr("Not recognized"),
-                                                );
-                                                for meter in
-                                                    [TimeSignature::Common, TimeSignature::Cut]
-                                                {
-                                                    ui.selectable_value(
-                                                        &mut header.time_signature,
-                                                        Some(meter),
-                                                        meter.label(),
-                                                    );
-                                                }
-                                                if ui
-                                                    .selectable_label(
-                                                        matches!(
-                                                            header.time_signature,
-                                                            Some(TimeSignature::Meter { .. })
-                                                        ),
-                                                        i18n::tr("Numeric"),
-                                                    )
-                                                    .clicked()
-                                                    && !matches!(
-                                                        header.time_signature,
-                                                        Some(TimeSignature::Meter { .. })
-                                                    )
-                                                {
-                                                    header.time_signature =
-                                                        Some(TimeSignature::Meter {
-                                                            beats: 4,
-                                                            beat_unit: 4,
-                                                        });
-                                                }
-                                            });
-                                        if let Some(TimeSignature::Meter { beats, beat_unit }) =
-                                            &mut header.time_signature
-                                        {
-                                            ui.horizontal(|ui| {
-                                                ui.add(egui::DragValue::new(beats).range(1..=32));
-                                                ui.label("/");
-                                                egui::ComboBox::from_id_salt("beat_unit")
-                                                    .width(64.0)
-                                                    .selected_text(beat_unit.to_string())
-                                                    .show_ui(ui, |ui| {
-                                                        for value in [1, 2, 4, 8, 16, 32] {
-                                                            ui.selectable_value(
-                                                                beat_unit,
-                                                                value,
-                                                                value.to_string(),
-                                                            );
-                                                        }
-                                                    });
-                                            });
-                                        }
-                                        ui.checkbox(
-                                            &mut header.confirmed,
-                                            i18n::tr("Staff information reviewed"),
-                                        );
-                                        if header != previous_header {
-                                            self.snapshot();
-                                            self.page.score
-                                                .set_staff_header(self.page.selected_staff, header);
-                                        }
-                                    });
-                                ui.separator();
-                                let mut bars = self.page.score.barlines.clone();
-                                let mut changed = false;
-                                ui.push_id(("barlines", self.page.selected_staff), |ui| {
-                                    let mut indices: Vec<_> = bars
-                                        .iter()
-                                        .enumerate()
-                                        .filter(|(index, _)| {
-                                            self.page.selected_object == Some(Object::Barline(*index))
-                                        })
-                                        .map(|(index, _)| index)
-                                        .collect();
-                                    indices.sort_by(|&first, &second| {
-                                        bars[first].x.total_cmp(&bars[second].x)
-                                    });
-                                    let mut remove = None;
-                                    for index in indices {
-                                        ui.push_id(index, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.strong(i18n::tr("Barline"));
-                                                if ui
-                                                    .button("\u{00d7}")
-                                                    .on_hover_text(i18n::tr("Delete barline"))
-                                                    .clicked()
-                                                {
-                                                    remove = Some(index);
-                                                }
-                                            });
-                                            let previous_kind = bars[index].kind;
-                                            let response =
-                                                egui::ComboBox::from_id_salt("barline_kind")
-                                                    .width(ui.available_width())
-                                                    .wrap_mode(egui::TextWrapMode::Wrap)
-                                                    .selected_text(bars[index].kind.label())
-                                                    .show_ui(ui, |ui| {
-                                                        for kind in BarlineKind::ALL {
-                                                            changed |= ui
-                                                                .selectable_value(
-                                                                    &mut bars[index].kind,
-                                                                    kind,
-                                                                    kind.label(),
-                                                                )
-                                                                .changed();
-                                                        }
-                                                    });
-                                            if previous_kind != bars[index].kind {
-                                                response.response.scroll_to_me(None);
-                                            }
-                                            changed |= ui
-                                                .checkbox(&mut bars[index].confirmed, i18n::tr("Reviewed"))
-                                                .changed();
-                                        });
-                                    }
-                                    if let Some(index) = remove {
-                                        bars.remove(index);
-                                        self.page.selected_object = None;
-                                        changed = true;
-                                    }
-                                });
-                                if changed {
-                                    self.snapshot();
-                                    self.page.score.barlines = bars;
-                                    self.page.score.recompute_accidentals();
-                                }
-                                self.key_change_editor(ui);
-                                self.time_change_editor(ui);
-                                self.dynamic_editor(ui);
-                                self.repeat_mark_editor(ui);
-                                self.span_editor(ui);
-                                if matches!(
-                                    self.page.selected_object,
-                                    Some(
-                                        Object::Barline(_)
-                                            | Object::KeyChange(_)
-                                            | Object::TimeChange(_)
-                                            | Object::Dynamic(_)
-                                            | Object::RepeatMark(_)
-                                            | Object::Span(_)
-                                    )
-                                ) {
-                                    ui.separator();
-                                }
-                            }
-                            if let Some(index) = self.page
-                                .selected
-                                .filter(|&index| index < self.page.score.notes.len())
-                            {
-                                let mut note = self.page.score.notes[index].clone();
-                                ui.heading(note.pitch_label());
-                                let mut changed = Self::voice_editor(ui, &mut note.voice);
-                                ui.horizontal(|ui| {
-                                    let names = ["C", "D", "E", "F", "G", "A", "B / H"];
-                                    let mut degree = note.pitch.rem_euclid(7);
-                                    let mut octave = note.pitch.div_euclid(7);
-                                    egui::ComboBox::from_id_salt("pitch_name")
-                                        .width(65.0)
-                                        .selected_text(names[degree as usize])
-                                        .show_ui(ui, |ui| {
-                                            for (index, name) in names.iter().enumerate() {
-                                                ui.selectable_value(
-                                                    &mut degree,
-                                                    index as i32,
-                                                    *name,
-                                                );
-                                            }
-                                        });
-                                    ui.add(
-                                        egui::DragValue::new(&mut octave)
-                                            .range(0..=9)
-                                            .prefix(i18n::tr("Octave: ")),
-                                    );
-                                    let pitch = octave * 7 + degree;
-                                    changed |= pitch != note.pitch;
-                                    note.pitch = pitch;
-                                });
-                                Self::inspector_combo(ui, i18n::tr("Accidental"))
-                                    .selected_text(if !note.accidental_explicit {
-                                        i18n::tr("Automatic")
-                                    } else {
-                                        match note.accidental {
-                                            -1 => "b",
-                                            1 => "#",
-                                            _ => i18n::tr("Natural"),
-                                        }
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        if ui
-                                            .selectable_label(
-                                                !note.accidental_explicit,
-                                                i18n::tr("Automatic"),
-                                            )
-                                            .clicked()
-                                        {
-                                            note.accidental_explicit = false;
-                                            changed = true;
-                                        }
-                                        for (value, label) in
-                                            [(-1, "b  [b]"), (0, i18n::tr("Natural  [=]")), (1, "#  [#]")]
-                                        {
-                                            if ui
-                                                .selectable_label(
-                                                    note.accidental_explicit
-                                                        && note.accidental == value,
-                                                    label,
-                                                )
-                                                .clicked()
-                                            {
-                                                note.accidental = value;
-                                                note.accidental_explicit = true;
-                                                changed = true;
-                                            }
-                                        }
-                                    });
-                                Self::inspector_combo(ui, i18n::tr("Note value"))
-                                    .selected_text(duration_shortcut_label(note.duration))
-                                    .show_ui(ui, |ui| {
-                                        for duration in Duration::ALL {
-                                            changed |= ui
-                                                .selectable_value(
-                                                    &mut note.duration,
-                                                    duration,
-                                                    duration_shortcut_label(duration),
-                                                )
-                                                .changed();
-                                        }
-                                    });
-                                changed |= Self::dot_editor(ui, &mut note.dots);
-                                let mut use_tuplet = note.tuplet_ratio().is_some();
-                                if ui.checkbox(&mut use_tuplet, i18n::tr("Tuplet")).changed() {
-                                    note.tuplet = use_tuplet.then(Tuplet::default);
-                                    note.triplet = false;
-                                    changed = true;
-                                }
-                                if use_tuplet {
-                                    let mut ratio = note.tuplet_ratio().unwrap_or_default();
-                                    ui.horizontal_wrapped(|ui| {
-                                        let actual_changed = ui.add(egui::DragValue::new(&mut ratio.actual)
-                                            .range(2..=64).prefix(i18n::tr("Notes: "))).changed();
-                                        ui.label(i18n::tr("in the time of"));
-                                        let normal_changed = ui.add(egui::DragValue::new(&mut ratio.normal)
-                                            .range(1..=64)).changed();
-                                        if actual_changed || normal_changed {
-                                            note.tuplet = Some(ratio);
-                                            note.triplet = false;
-                                            changed = true;
-                                        }
-                                    });
-                                    ui.small(i18n::tr("e.g. triplet 3:2, quintuplet 5:4, septuplet 7:4"));
-                                }
-                                if ui.checkbox(&mut note.grace, i18n::tr("Grace note")).on_hover_text(
-                                    i18n::tr("Does not count towards measure duration. The note value determines its appearance.")
-                                ).changed() {
-                                    if note.grace { note.small = true; }
-                                    changed = true;
-                                }
-                                changed |= ui.checkbox(&mut note.small, i18n::tr("Small noteheads")).changed();
-                                Self::inspector_combo(ui, i18n::tr("Articulation"))
-                                    .selected_text(note.articulation.label())
-                                    .show_ui(ui, |ui| {
-                                        for articulation in Articulation::ALL {
-                                            changed |= ui
-                                                .selectable_value(
-                                                    &mut note.articulation,
-                                                    articulation,
-                                                    articulation.label(),
-                                                )
-                                                .changed();
-                                        }
-                                    });
-                                changed |= ui.checkbox(&mut note.confirmed, i18n::tr("Reviewed")).changed();
-                                if changed {
-                                    self.snapshot();
-                                    if note.pitch != self.page.score.notes[index].pitch {
-                                        let staff = &self.page.score.staves[note.staff];
-                                        note.y = staff.y_at_pitch(note.pitch);
-                                    }
-                                    self.page.score.notes[index] = note;
-                                    self.page.score.recompute_accidentals();
-                                }
-                                if ui
-                                    .button("\u{00d7}")
-                                    .on_hover_text(i18n::tr("Delete note (Delete / Backspace)"))
-                                    .clicked()
-                                {
-                                    self.snapshot();
-                                    self.page.score.notes.remove(index);
-                                    self.page.score.recompute_accidentals();
-                                    self.select_object(None);
-                                }
-                                ui.separator();
-                            }
-                            if let Some(index) = self.page
-                                .selected_rest
-                                .filter(|&index| index < self.page.score.rests.len())
-                            {
-                                let mut rest = self.page.score.rests[index].clone();
-                                let remove = ui
-                                    .horizontal(|ui| {
-                                        ui.heading(i18n::tr("Rest"));
-                                        ui.button("\u{00d7}")
-                                            .on_hover_text(i18n::tr("Delete rest (Delete / Backspace)"))
-                                            .clicked()
-                                    })
-                                    .inner;
-                                let mut changed = false;
-                                let mut multiple = rest.measures.is_some();
-                                if ui.checkbox(&mut multiple, i18n::tr("Multimeasure rest")).changed() {
-                                    rest.measures = multiple.then_some(2);
-                                    if multiple {
-                                        rest.duration = Duration::Whole;
-                                        rest.dots = 0;
-                                        rest.tuplet = None;
-                                    }
-                                    changed = true;
-                                }
-                                if let Some(count) = &mut rest.measures {
-                                    ui.horizontal(|ui| {
-                                        ui.label(i18n::tr("Measures"));
-                                        changed |= ui
-                                            .add(egui::DragValue::new(count).range(2..=99))
-                                            .changed();
-                                    });
-                                } else {
-                                    Self::inspector_combo(ui, i18n::tr("Rest value"))
-                                        .selected_text(duration_shortcut_label(rest.duration))
-                                        .show_ui(ui, |ui| {
-                                            for duration in Duration::ALL {
-                                                changed |= ui
-                                                    .selectable_value(
-                                                        &mut rest.duration,
-                                                        duration,
-                                                        duration_shortcut_label(duration),
-                                                    )
-                                                    .changed();
-                                            }
-                                        });
-                                    changed |= Self::dot_editor(ui, &mut rest.dots);
-                                }
-                                changed |= ui.checkbox(&mut rest.fermata, i18n::tr("Fermata")).changed();
-                                changed |= ui.checkbox(&mut rest.confirmed, i18n::tr("Reviewed")).changed();
-                                changed |= Self::voice_editor(ui, &mut rest.voice);
-                                if rest.measures.is_none()
-                                    && let Some(ratio) = Self::rest_tuplet_editor(ui, Some(rest.tuplet))
-                                {
-                                    rest.tuplet = ratio;
-                                    changed = true;
-                                }
-                                if changed {
-                                    self.snapshot();
-                                    self.page.score.rests[index] = rest;
-                                }
-                                if remove {
-                                    self.snapshot();
-                                    self.page.score.rests.remove(index);
-                                    self.select_object(None);
-                                }
-                                ui.separator();
-                            }
-                        });
+                        }
+                        if self.page.show_object_list {
+                            self.object_list(ui);
+                            return;
+                        }
+                        self.inspector_details(ui);
                     });
+                });
             });
     }
 
@@ -4224,7 +5203,10 @@ impl App {
                                         self.page.score.barlines[index].x
                                     }
                                     Some(Object::Span(index)) => {
-                                        self.page.score.spans[index].start[0]
+                                        self.page
+                                            .score
+                                            .resolved_span(&self.page.score.spans[index])
+                                            .start[0]
                                     }
                                     Some(Object::KeyChange(index)) => {
                                         self.page.score.key_changes[index].x
@@ -4314,6 +5296,7 @@ impl App {
                             let clef_label = match staff.header.clef {
                                 Clef::Bass => i18n::tr("Bass"),
                                 Clef::Treble => i18n::tr("Treble"),
+                                Clef::Treble8vb => i18n::tr("Treble clef (octave below)"),
                                 Clef::Unknown => "?",
                             };
                             let time_label = staff
@@ -4376,14 +5359,13 @@ impl App {
                         }
                         for (index, change) in self.page.score.key_changes.iter().enumerate() {
                             let staff = &self.page.score.staves[change.staff];
-                            let color =
-                                if self.page.selected_object == Some(Object::KeyChange(index)) {
-                                    Color32::from_rgb(0, 95, 180)
-                                } else if change.confirmed {
-                                    Color32::from_rgb(0, 135, 85)
-                                } else {
-                                    Color32::from_rgb(155, 90, 0)
-                                };
+                            let color = if self.object_selected(Object::KeyChange(index)) {
+                                Color32::from_rgb(0, 95, 180)
+                            } else if change.confirmed {
+                                Color32::from_rgb(0, 135, 85)
+                            } else {
+                                Color32::from_rgb(155, 90, 0)
+                            };
                             let mut rect = Rect::from_min_max(
                                 map(change.x, staff.lines[0] - staff.spacing()),
                                 map(change.x + staff.spacing(), staff.lines[4] + staff.spacing()),
@@ -4417,14 +5399,13 @@ impl App {
                         }
                         for (index, change) in self.page.score.time_changes.iter().enumerate() {
                             let staff = &self.page.score.staves[change.staff];
-                            let color =
-                                if self.page.selected_object == Some(Object::TimeChange(index)) {
-                                    Color32::from_rgb(0, 95, 180)
-                                } else if change.confirmed {
-                                    Color32::from_rgb(0, 135, 85)
-                                } else {
-                                    Color32::from_rgb(155, 90, 0)
-                                };
+                            let color = if self.object_selected(Object::TimeChange(index)) {
+                                Color32::from_rgb(0, 95, 180)
+                            } else if change.confirmed {
+                                Color32::from_rgb(0, 135, 85)
+                            } else {
+                                Color32::from_rgb(155, 90, 0)
+                            };
                             let mut rect = Rect::from_min_max(
                                 map(change.x, staff.lines[0] - staff.spacing()),
                                 map(change.x + staff.spacing(), staff.lines[4] + staff.spacing()),
@@ -4463,8 +5444,7 @@ impl App {
                                 map(bounds.left, bounds.top),
                                 map(bounds.right, bounds.bottom),
                             );
-                            let color = if self.page.selected_object == Some(Object::Dynamic(index))
-                            {
+                            let color = if self.object_selected(Object::Dynamic(index)) {
                                 Color32::from_rgb(0, 95, 180)
                             } else if dynamic.confirmed {
                                 Color32::from_rgb(0, 135, 85)
@@ -4492,14 +5472,13 @@ impl App {
                                 map(bounds.left, bounds.top),
                                 map(bounds.right, bounds.bottom),
                             );
-                            let color =
-                                if self.page.selected_object == Some(Object::RepeatMark(index)) {
-                                    Color32::from_rgb(0, 95, 180)
-                                } else if mark.confirmed {
-                                    Color32::from_rgb(0, 135, 85)
-                                } else {
-                                    Color32::from_rgb(155, 90, 0)
-                                };
+                            let color = if self.object_selected(Object::RepeatMark(index)) {
+                                Color32::from_rgb(0, 95, 180)
+                            } else if mark.confirmed {
+                                Color32::from_rgb(0, 135, 85)
+                            } else {
+                                Color32::from_rgb(155, 90, 0)
+                            };
                             if mark.kind == RepeatMarkKind::Ending {
                                 crate::preview::paint_ending(
                                     ui.painter(),
@@ -4551,8 +5530,7 @@ impl App {
                         for (index, bar) in self.page.score.barlines.iter().enumerate() {
                             let staff = &self.page.score.staves[bar.staff];
                             let gap = (staff.spacing() * self.page.zoom).max(10.0);
-                            let color = if self.page.selected_object == Some(Object::Barline(index))
-                            {
+                            let color = if self.object_selected(Object::Barline(index)) {
                                 Color32::from_rgb(0, 95, 180)
                             } else if bar.confirmed {
                                 Color32::from_rgb(0, 135, 85)
@@ -4610,11 +5588,11 @@ impl App {
                                 }
                             }
                         }
-                        for (index, span) in self.page.score.spans.iter().enumerate() {
-                            let selected = self.page.selected_object == Some(Object::Span(index));
+                        for (index, span) in self.page.score.drawable_spans() {
+                            let selected = self.object_selected(Object::Span(index));
                             crate::preview::paint_span(
                                 ui.painter(),
-                                span,
+                                &span,
                                 |point| map(point[0], point[1]),
                                 if selected {
                                     Color32::from_rgb(0, 95, 180)
@@ -4627,7 +5605,38 @@ impl App {
                             );
                             if selected {
                                 for (right, point) in [(false, span.start), (true, span.end)] {
+                                    let original = &self.page.score.spans[index];
+                                    let endpoint_staff = if right {
+                                        original
+                                            .end_anchor
+                                            .as_ref()
+                                            .map(|a| self.page.score.notes[a.note].staff)
+                                            .unwrap_or(original.staff)
+                                    } else {
+                                        original.staff
+                                    };
+                                    if endpoint_staff != span.staff {
+                                        continue;
+                                    }
                                     let center = map(point[0], point[1]);
+                                    let anchor = if right {
+                                        &original.end_anchor
+                                    } else {
+                                        &original.start_anchor
+                                    };
+                                    if let Some(anchor) = anchor {
+                                        let note = &self.page.score.notes[anchor.note];
+                                        let attached = map(note.x, note.y);
+                                        ui.painter().line_segment(
+                                            [center, attached],
+                                            Stroke::new(1.0_f32, Color32::from_rgb(0, 95, 180)),
+                                        );
+                                        ui.painter().circle_stroke(
+                                            attached,
+                                            4.0,
+                                            Stroke::new(1.5_f32, Color32::from_rgb(0, 95, 180)),
+                                        );
+                                    }
                                     ui.painter().circle_filled(center, 6.0, Color32::WHITE);
                                     ui.painter().circle_stroke(
                                         center,
@@ -4649,9 +5658,7 @@ impl App {
                             }
                         }
                         for (index, rest) in self.page.score.rests.iter().enumerate() {
-                            let color = if self.page.selected_rest == Some(index)
-                                || self.page.selection.contains(&Object::Rest(index))
-                            {
+                            let color = if self.object_selected(Object::Rest(index)) {
                                 Color32::from_rgb(0, 95, 180)
                             } else if rest.confirmed {
                                 Color32::from_rgb(0, 135, 85)
@@ -4694,9 +5701,7 @@ impl App {
                             );
                         }
                         for (index, note) in self.page.score.notes.iter().enumerate() {
-                            let color = if self.page.selected == Some(index)
-                                || self.page.selection.contains(&Object::Note(index))
-                            {
+                            let color = if self.object_selected(Object::Note(index)) {
                                 Color32::from_rgb(0, 95, 180)
                             } else if note.confirmed {
                                 Color32::from_rgb(0, 135, 85)
@@ -4722,9 +5727,7 @@ impl App {
                                     .max(6.0),
                                 Stroke::new(2.0_f32, color),
                             );
-                            if self.page.selected == Some(index)
-                                || self.page.selection.contains(&Object::Note(index))
-                            {
+                            if self.object_selected(Object::Note(index)) {
                                 ui.painter().text(
                                     center + Vec2::new(0.0, -20.0),
                                     egui::Align2::CENTER_BOTTOM,
@@ -4740,7 +5743,9 @@ impl App {
                             let position = (pointer - rect.min) / self.page.zoom;
                             let object = self.hit_object(position).map(DragTarget::object);
                             let show_object_list = self.page.show_object_list;
-                            self.select_object(object);
+                            if !object.is_some_and(|object| self.object_selected(object)) {
+                                self.select_object(object);
+                            }
                             self.page.show_object_list = show_object_list;
                             self.page.object_drag = None;
                             self.page.canvas_context = Some((position, object));
@@ -4763,9 +5768,9 @@ impl App {
                             let position = (pointer - rect.min) / self.page.zoom;
                             if response.clicked() {
                                 let target = self.hit_object(position);
-                                self.select_with_modifiers(
+                                self.click_object(
                                     target.map(DragTarget::object),
-                                    context.input(|input| input.modifiers),
+                                    context.input(|i| i.modifiers),
                                 );
                                 if target.is_none()
                                     && let Some((index, _)) =
@@ -6663,12 +7668,61 @@ mod tests {
         }
     }
 
+    fn expand_notation_options(app: &mut App, context: &egui::Context, size: Vec2) {
+        let render = |app: &mut App, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    app.toolbar(context);
+                    app.inspector(context);
+                    app.canvas(context);
+                },
+            )
+        };
+        for _ in 0..3 {
+            render(app, vec![]);
+        }
+        let output = render(app, vec![]);
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == i18n::tr("Notation options") => {
+                    Some(shape.shape.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("notation options are available under object properties");
+        for pressed in [true, false] {
+            render(
+                app,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        for _ in 0..12 {
+            render(app, vec![]);
+        }
+    }
+
     #[test]
     fn triplet_control_is_editable_and_undoable() {
         let context = egui::Context::default();
         let mut app = demo_app();
         app.page.selected = Some(0);
         let size = Vec2::new(1280.0, 820.0);
+        expand_notation_options(&mut app, &context, size);
         let mut control = None;
         for _pass in 0..3 {
             let output = context.run(
@@ -6734,6 +7788,7 @@ mod tests {
             let mut app = demo_app();
             app.page.selected = Some(0);
             let size = Vec2::new(1280.0, 1000.0);
+            expand_notation_options(&mut app, &context, size);
             let render = |app: &mut App, events| {
                 context.run(
                     egui::RawInput {
@@ -6841,7 +7896,7 @@ mod tests {
             }
             for _pass in 0..3 {
                 let output = render(&mut app, vec![]);
-                for expected in ["Bassschluessel", "Cis-Dur / ais-Moll"] {
+                for expected in [i18n::tr("Bass clef"), "Cis-Dur / ais-Moll"] {
                     let clef = output
                         .shapes
                         .iter()
@@ -6875,6 +7930,7 @@ mod tests {
                 selected_object: None,
                 selection: vec![],
                 selection_anchor: None,
+                active_voice: 1,
                 object_drag: None,
                 canvas_context: None,
                 selected_staff: 0,
@@ -6884,6 +7940,7 @@ mod tests {
                 reveal_selection: false,
                 reveal_x: None,
                 show_object_list: false,
+                inspector_section: InspectorSection::Object,
                 staff_spacing: 16.0,
                 undo: vec![],
                 redo: vec![],
@@ -7763,6 +8820,10 @@ mod tests {
     fn objects_follow_staff_and_position_and_anchors_stay_ordered() {
         let mut app = demo_app();
         app.page.score.spans = vec![Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: 0,
             kind: SpanKind::Slur,
             start: [250.0, 90.0],
@@ -7918,7 +8979,7 @@ mod tests {
                         .iter()
                         .find(|shape| {
                             matches!(&shape.shape,
-                        egui::Shape::Text(text) if text.galley.text() == "Objekt einfuegen")
+                        egui::Shape::Text(text) if text.galley.text() == i18n::tr("Insert object"))
                         })
                         .expect("insertion menu heading");
                     assert!(
@@ -8120,6 +9181,10 @@ mod tests {
                 confirmed: false,
             });
             app.page.score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Slur,
                 start: [250.0, 70.0],
@@ -8151,7 +9216,7 @@ mod tests {
                     },
                 )
             };
-            for action in ["Eigenschaften", "Loeschen"] {
+            for action in [i18n::tr("Properties"), i18n::tr("Delete")] {
                 app.page.canvas_context = Some((Vec2::new(300.0, 130.0), Some(object)));
                 let output = render(&mut app, vec![]);
                 let position = output
@@ -8178,7 +9243,7 @@ mod tests {
                         ],
                     );
                 }
-                if action == "Eigenschaften" {
+                if action == i18n::tr("Properties") {
                     assert_eq!(app.page.selected_object, Some(object));
                     assert!(!app.page.show_object_list);
                     assert_eq!(serde_json::to_value(&app.page.score).unwrap(), before);
@@ -8249,7 +9314,7 @@ mod tests {
                 );
             }
             let output = render(&mut app, vec![]);
-            for expected in ["Eigenschaften", "Loeschen"] {
+            for expected in [i18n::tr("Properties"), i18n::tr("Delete")] {
                 assert!(
                     output.shapes.iter().any(|shape| matches!(&shape.shape,
                     egui::Shape::Text(text) if text.galley.text() == expected)),
@@ -8259,8 +9324,8 @@ mod tests {
             assert_eq!(app.page.selected_object, Some(Object::Note(0)));
             assert_eq!(serde_json::to_value(&app.page.score).unwrap(), original);
             assert!(app.page.show_object_list);
-            for action in ["Eigenschaften", "Loeschen"] {
-                if action == "Loeschen" {
+            for action in [i18n::tr("Properties"), i18n::tr("Delete")] {
+                if action == i18n::tr("Delete") {
                     for _pass in 0..3 {
                         render(&mut app, vec![]);
                     }
@@ -8307,7 +9372,7 @@ mod tests {
                         ],
                     );
                 }
-                if action == "Eigenschaften" {
+                if action == i18n::tr("Properties") {
                     assert!(!app.page.show_object_list);
                     assert_eq!(app.page.selected_object, Some(Object::Note(0)));
                     assert_eq!(serde_json::to_value(&app.page.score).unwrap(), original);
@@ -8327,6 +9392,96 @@ mod tests {
     }
 
     #[test]
+    fn correction_sections_switch_collapse_and_follow_object_selection() {
+        let context = egui::Context::default();
+        App::configure_style(&context);
+        let mut app = demo_app();
+        app.select_object(Some(Object::Note(0)));
+        let before = serde_json::to_value(&app.page.score).unwrap();
+        let render = |app: &mut App, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(760.0, 1000.0))),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.inspector(context),
+            )
+        };
+        let visible = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    let rect = shape.shape.visual_bounding_rect();
+                    shape.clip_rect.contains_rect(rect).then_some(rect.center())
+                }
+                _ => None,
+            })
+        };
+        for _ in 0..3 {
+            render(&mut app, vec![]);
+        }
+        let output = render(&mut app, vec![]);
+        assert!(visible(&output, i18n::tr("Note value")).is_some());
+        assert!(visible(&output, i18n::tr("Clef")).is_none());
+        assert!(visible(&output, i18n::tr("Assign part")).is_none());
+        for (section, title, body) in [
+            (InspectorSection::Staff, "Staff information", "Clef"),
+            (InspectorSection::Part, "Part assignment", "Assign part"),
+            (InspectorSection::Lyrics, "Lyrics", "Add verse"),
+        ] {
+            let output = render(&mut app, vec![]);
+            let position =
+                visible(&output, i18n::tr(title)).expect("section header stays available");
+            for pressed in [true, false] {
+                render(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            assert_eq!(app.page.inspector_section, section);
+            let output = render(&mut app, vec![]);
+            assert!(visible(&output, i18n::tr("Note value")).is_none());
+            if section == InspectorSection::Part {
+                assert!(
+                    visible(&output, i18n::tr(body)).is_some()
+                        || visible(&output, i18n::tr("Part")).is_some()
+                );
+            } else if section != InspectorSection::Lyrics {
+                assert!(visible(&output, i18n::tr(body)).is_some());
+            }
+            let position = visible(&output, i18n::tr(title)).unwrap();
+            for pressed in [true, false] {
+                render(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            assert_eq!(app.page.inspector_section, InspectorSection::Closed);
+        }
+        app.select_object(Some(Object::Note(1)));
+        assert_eq!(app.page.inspector_section, InspectorSection::Object);
+        assert!(visible(&render(&mut app, vec![]), i18n::tr("Note value")).is_some());
+        assert_eq!(serde_json::to_value(&app.page.score).unwrap(), before);
+        assert!(app.page.undo.is_empty());
+    }
+
+    #[test]
     fn correction_object_preview_stays_visible_and_tracks_settings_and_history() {
         for size in [Vec2::new(760.0, 520.0), Vec2::new(1280.0, 820.0)] {
             let context = egui::Context::default();
@@ -8343,6 +9498,10 @@ mod tests {
                 confirmed: false,
             });
             app.page.score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Slur,
                 start: [250.0, 70.0],
@@ -8585,6 +9744,10 @@ mod tests {
                 confirmed: false,
             }];
             app.page.score.spans = vec![Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Slur,
                 start: [250.0, 70.0],
@@ -8882,6 +10045,10 @@ mod tests {
                         confirmed: false,
                     }];
                     app.page.score.spans = vec![Span {
+                        start_anchor: None,
+                        end_anchor: None,
+                        continuation: None,
+                        wedge_openings: None,
                         staff: 0,
                         kind: SpanKind::Slur,
                         start: [250.0, 70.0],
@@ -9100,6 +10267,10 @@ mod tests {
                     }
                     if let Some(kind) = kind {
                         app.page.score.spans.push(Span {
+                            start_anchor: None,
+                            end_anchor: None,
+                            continuation: None,
+                            wedge_openings: None,
                             staff: 0,
                             kind,
                             start: [160.0, 138.0],
@@ -9296,7 +10467,7 @@ mod tests {
                 app.redo();
                 assert_eq!(app.page.score.spans[0].kind, next);
                 app.select_object(Some(Object::Span(0)));
-                click(&mut app, "Geprueft");
+                click(&mut app, i18n::tr("Reviewed"));
                 assert!(!app.page.score.spans[0].confirmed);
                 let restored: Score =
                     serde_json::from_slice(&serde_json::to_vec(&app.page.score).unwrap()).unwrap();
@@ -9354,7 +10525,7 @@ mod tests {
                 app.select_object(Some(Object::KeyChange(0)));
                 previous = next;
             }
-            click(&mut app, "Tonartwechsel geprueft");
+            click(&mut app, i18n::tr("Key change reviewed"));
             assert!(!app.page.score.key_changes[0].confirmed);
             assert!(app.page.score.validate().is_ok());
             let restored: Score =
@@ -9366,6 +10537,294 @@ mod tests {
             assert_eq!(app.page.score.key_changes[0].key_signature, previous);
             app.redo();
             assert!(app.page.score.key_changes.is_empty());
+        }
+    }
+
+    #[test]
+    fn compact_lyric_editor_edits_navigates_and_keeps_options_in_a_menu() {
+        use libreomr::model::{Lyric, StaffAssignment, Syllabic};
+        for width in [220.0, 290.0] {
+            let context = egui::Context::default();
+            let mut app = demo_app();
+            app.page.score = Score::default();
+            for staff in 0..3 {
+                let y = 20.0 + staff as f32 * 180.0;
+                app.page.score.staves.push(Staff {
+                    lines: [y, y + 10.0, y + 20.0, y + 30.0, y + 40.0],
+                    left: 10.0,
+                    right: 400.0,
+                    header: Default::default(),
+                });
+                app.page.score.staff_assignments.push(StaffAssignment {
+                    staff,
+                    part: staff % 2,
+                    system: staff / 2,
+                    name: format!("Part {}", staff % 2),
+                });
+                for x in if staff == 0 {
+                    vec![100.0, 200.0]
+                } else {
+                    vec![100.0]
+                } {
+                    let note = app.page.score.add_note(x, y + 40.0).unwrap();
+                    for verse in 1..=4 {
+                        app.page.score.lyrics.push(Lyric {
+                            placement: Default::default(),
+                            note,
+                            verse,
+                            verse_label: (note == 0).then(|| format!("{verse}.")),
+                            text: format!("Silbe{verse}-{note}"),
+                            syllabic: Syllabic::Single,
+                            extend: false,
+                            confirmed: false,
+                            bounds: None,
+                        });
+                    }
+                }
+            }
+            app.select_object(Some(Object::Note(0)));
+            let render = |app: &mut App, events: Vec<egui::Event>| {
+                let modifiers = events
+                    .iter()
+                    .find_map(|e| match e {
+                        egui::Event::Key { modifiers, .. } => Some(*modifiers),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 320.0))),
+                        modifiers,
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.set_max_width(width);
+                            let top = ui.cursor().top();
+                            app.lyric_editor(ui, app.page.selected.unwrap_or(0));
+                            assert!(ui.cursor().top() - top < 160.0, "four verses stay compact");
+                        });
+                    },
+                )
+            };
+            let position = |output: &egui::FullOutput, label: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if t.galley.text() == label => {
+                            let bounds = s.shape.visual_bounding_rect();
+                            s.clip_rect.contains_rect(bounds).then_some(bounds.center())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("visible {label}"))
+            };
+            let click = |app: &mut App, label: &str| {
+                let output = render(app, vec![]);
+                let at = position(&output, label);
+                for pressed in [true, false] {
+                    render(
+                        app,
+                        vec![
+                            egui::Event::PointerMoved(at),
+                            egui::Event::PointerButton {
+                                pos: at,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: Default::default(),
+                            },
+                        ],
+                    );
+                }
+            };
+            for _ in 0..3 {
+                render(&mut app, vec![]);
+            }
+            let output = render(&mut app, vec![]);
+            for verse in 1..=4 {
+                position(&output, &format!("Silbe{verse}-0"));
+            }
+            assert!(!output.shapes.iter().any(|s| matches!(&s.shape,
+                egui::Shape::Text(t) if t.galley.text() == i18n::tr("Extend syllable"))));
+            click(&mut app, "Silbe2-0");
+            render(&mut app, vec![egui::Event::Text("!".into())]);
+            assert!(
+                app.page
+                    .score
+                    .lyrics
+                    .iter()
+                    .find(|l| l.note == 0 && l.verse == 2)
+                    .unwrap()
+                    .text
+                    .contains('!')
+            );
+            let enter = |shift| egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    shift,
+                    ..Default::default()
+                },
+            };
+            render(&mut app, vec![enter(false)]);
+            assert_eq!(app.page.selected, Some(1));
+            render(&mut app, vec![]);
+            render(&mut app, vec![egui::Event::Text("?".into())]);
+            assert!(
+                app.page
+                    .score
+                    .lyrics
+                    .iter()
+                    .find(|l| l.note == 1 && l.verse == 2)
+                    .unwrap()
+                    .text
+                    .contains('?')
+            );
+            render(&mut app, vec![enter(true)]);
+            assert_eq!(app.page.selected, Some(0));
+            click(&mut app, ">");
+            assert_eq!(app.page.selected, Some(1));
+            click(&mut app, ">");
+            assert_eq!(
+                app.page.selected,
+                Some(3),
+                "same part continues in next system"
+            );
+            click(&mut app, "<");
+            click(&mut app, "<");
+            assert_eq!(app.page.selected, Some(0));
+            click(&mut app, "...");
+            let output = render(&mut app, vec![]);
+            let heading = position(&output, i18n::tr("Printed verse label"));
+            let heading_left = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == i18n::tr("Printed verse label") => {
+                        Some(s.shape.visual_bounding_rect().left())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let field = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == "1." => {
+                        let center = s.shape.visual_bounding_rect().center();
+                        (center.y > heading.y && center.x > heading_left).then_some(center)
+                    }
+                    _ => None,
+                })
+                .expect("printed label input is visible below its heading");
+            for pressed in [true, false] {
+                render(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(field),
+                        egui::Event::PointerButton {
+                            pos: field,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            let output = render(&mut app, vec![]);
+            position(&output, i18n::tr("Printed verse label"));
+            render(&mut app, vec![egui::Event::Text("X".into())]);
+            let edited_label = app
+                .page
+                .score
+                .lyrics
+                .iter()
+                .find(|l| l.note == 0 && l.verse == 1)
+                .unwrap()
+                .verse_label
+                .clone();
+            assert!(edited_label.as_ref().unwrap().contains('X'));
+            assert_eq!(
+                app.page.selected,
+                Some(0),
+                "editing a label must not navigate"
+            );
+            click(&mut app, i18n::tr("Extend syllable"));
+            position(&render(&mut app, vec![]), i18n::tr("Printed verse label"));
+            assert!(
+                app.page
+                    .score
+                    .lyrics
+                    .iter()
+                    .find(|l| l.note == 0 && l.verse == 1)
+                    .unwrap()
+                    .extend
+            );
+            app.undo();
+            let lyric = app
+                .page
+                .score
+                .lyrics
+                .iter()
+                .find(|l| l.note == 0 && l.verse == 1)
+                .unwrap();
+            assert!(!lyric.extend);
+            assert_eq!(lyric.verse_label, edited_label);
+            app.undo();
+            assert_eq!(
+                app.page
+                    .score
+                    .lyrics
+                    .iter()
+                    .find(|l| l.note == 0 && l.verse == 1)
+                    .unwrap()
+                    .verse_label
+                    .as_deref(),
+                Some("1.")
+            );
+            for pressed in [true, false] {
+                render(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(Pos2::new(2.0, 2.0)),
+                        egui::Event::PointerButton {
+                            pos: Pos2::new(2.0, 2.0),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            let menu_visible = |output: &egui::FullOutput| {
+                output.shapes.iter().any(|s|
+                matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == i18n::tr("Printed verse label")))
+            };
+            assert!(
+                !menu_visible(&render(&mut app, vec![])),
+                "outside click closes the menu"
+            );
+            click(&mut app, "...");
+            assert!(menu_visible(&render(&mut app, vec![])));
+            render(
+                &mut app,
+                vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+            );
+            assert!(
+                !menu_visible(&render(&mut app, vec![])),
+                "Escape closes the menu"
+            );
+            app.page.score.validate().unwrap();
         }
     }
 
@@ -9396,19 +10855,25 @@ mod tests {
                 )
             };
             let has_text = |output: &egui::FullOutput, expected: &str| {
-                output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected))
+                output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected && shape.clip_rect.contains_rect(shape.shape.visual_bounding_rect())))
             };
             for _pass in 0..3 {
                 render(&mut app, Vec::new());
             }
             let output = render(&mut app, Vec::new());
-            assert!(has_text(&output, "Vorschau - Notensystem 1"));
+            assert!(has_text(&output, "Partiturvorschau"));
             assert!(has_text(&output, "8"));
             app.page.selected_staff = 1;
+            for _ in 0..3 {
+                render(&mut app, Vec::new());
+            }
             let output = render(&mut app, Vec::new());
-            assert!(has_text(&output, "Vorschau - Notensystem 2"));
+            assert!(has_text(&output, "Partiturvorschau"));
             assert!(!has_text(&output, "8"));
             app.page.selected_staff = 0;
+            for _ in 0..3 {
+                render(&mut app, Vec::new());
+            }
             app.snapshot();
             app.page.score.rests[rest].measures = Some(12);
             assert!(has_text(&render(&mut app, Vec::new()), "12"));
@@ -9447,7 +10912,7 @@ mod tests {
             }
             assert!(!app.show_preview);
             let output = render(&mut app, Vec::new());
-            assert!(!has_text(&output, "Vorschau - Notensystem 1"));
+            assert!(!has_text(&output, "Partiturvorschau"));
             let toggle = output
                 .shapes
                 .iter()
@@ -9473,10 +10938,7 @@ mod tests {
                 );
             }
             assert!(app.show_preview);
-            assert!(has_text(
-                &render(&mut app, Vec::new()),
-                "Vorschau - Notensystem 1"
-            ));
+            assert!(has_text(&render(&mut app, Vec::new()), "Partiturvorschau"));
             app.page.score = Score::default();
             assert!(has_text(&render(&mut app, Vec::new()), "Kein Notensystem"));
         }
@@ -9573,6 +11035,10 @@ mod tests {
                 confirmed: false,
             });
             app.page.score.spans.push(Span {
+                start_anchor: None,
+                end_anchor: None,
+                continuation: None,
+                wedge_openings: None,
                 staff: 0,
                 kind: SpanKind::Slur,
                 start: [250.0, 70.0],
@@ -10141,7 +11607,7 @@ mod tests {
                     );
                 }
             }
-            for hidden in ["Bild oeffnen", "Speichern", "Demonstration"] {
+            for hidden in [i18n::tr("Open image"), "Speichern", "Demonstration"] {
                 assert!(
                     !output.shapes.iter().any(|shape| matches!(&shape.shape,
                     egui::Shape::Text(text) if text.galley.text() == hidden)),
@@ -10177,8 +11643,8 @@ mod tests {
             }
             let menu_output = render(&mut app, vec![]);
             for action in [
-                "Bild oeffnen",
-                "Projekt oeffnen",
+                i18n::tr("Open image"),
+                i18n::tr("Open project"),
                 "Speichern",
                 "MusicXML exportieren",
                 "Neu erkennen",

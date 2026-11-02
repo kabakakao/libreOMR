@@ -58,76 +58,21 @@ impl App {
         object: Option<Object>,
         modifiers: egui::Modifiers,
     ) {
-        let Some(object) =
-            object.filter(|object| matches!(object, Object::Note(_) | Object::Rest(_)))
-        else {
-            if !modifiers.shift && !modifiers.command && !modifiers.ctrl {
-                self.select_object(object);
-            }
-            return;
-        };
-        let anchor = self.page.selection_anchor;
-        let mut selection = self.page.selection.clone();
-        if modifiers.shift {
-            let mut objects = self.ordered_objects();
-            objects.retain(|object| matches!(object, Object::Note(_) | Object::Rest(_)));
-            // Storage order can differ from the printed order of staves.
-            objects.sort_by(|a, b| {
-                let position = |object| match object {
-                    Object::Note(i) => (
-                        self.page.score.staves[self.page.score.notes[i].staff].lines[0],
-                        self.page.score.notes[i].x,
-                    ),
-                    Object::Rest(i) => (
-                        self.page.score.staves[self.page.score.rests[i].staff].lines[0],
-                        self.page.score.rests[i].x,
-                    ),
-                    _ => unreachable!(),
-                };
-                let (ay, ax) = position(*a);
-                let (by, bx) = position(*b);
-                ay.total_cmp(&by).then(ax.total_cmp(&bx))
-            });
-            if let Some((start, end)) = anchor
-                .and_then(|anchor| objects.iter().position(|item| *item == anchor))
-                .zip(objects.iter().position(|item| *item == object))
-            {
-                if !modifiers.command && !modifiers.ctrl {
-                    selection.clear();
-                }
-                for &item in &objects[start.min(end)..=start.max(end)] {
-                    if !selection.contains(&item) {
-                        selection.push(item);
-                    }
-                }
-            } else {
-                selection = vec![object];
-            }
-        } else if modifiers.command || modifiers.ctrl {
-            if selection.contains(&object) {
-                selection.retain(|item| *item != object);
-            } else {
-                selection.push(object);
-            }
-        } else {
-            self.select_object(Some(object));
-            return;
-        }
-        let primary = if selection.contains(&object) {
-            Some(object)
-        } else {
-            selection.last().copied()
-        };
-        self.select_object(primary);
-        self.page.selection = selection;
-        self.page.selection_anchor = if modifiers.shift {
-            anchor.or(primary)
-        } else {
-            primary
-        };
+        self.click_object(object, modifiers);
     }
 
     pub(super) fn apply_batch_edit(&mut self, edit: BatchEdit) {
+        if self.page_busy() {
+            return;
+        }
+        if matches!(edit, BatchEdit::Delete) {
+            self.delete_selection();
+            return;
+        }
+        if let BatchEdit::Voice(voice) = edit {
+            self.assign_voice(voice);
+            return;
+        }
         let mut score = self.page.score.clone();
         for &object in &self.page.selection {
             match object {
@@ -176,20 +121,6 @@ impl App {
                 }
                 _ => {}
             }
-        }
-        if matches!(edit, BatchEdit::Delete) {
-            let mut index = 0;
-            score.notes.retain(|_| {
-                let keep = !self.page.selection.contains(&Object::Note(index));
-                index += 1;
-                keep
-            });
-            index = 0;
-            score.rests.retain(|_| {
-                let keep = !self.page.selection.contains(&Object::Rest(index));
-                index += 1;
-                keep
-            });
         }
         score.recompute_accidentals();
         if serde_json::to_value(&score).unwrap() != serde_json::to_value(&self.page.score).unwrap()
@@ -459,6 +390,75 @@ mod tests {
         assert_eq!(serde_json::to_value(&app.page.score).unwrap(), before);
         app.select_object(None);
         assert!(app.page.selection.is_empty());
+    }
+
+    #[test]
+    fn batch_edits_and_deletion_preserve_lyrics_and_attached_bows() {
+        use libreomr::model::{Lyric, Syllabic};
+        let mut app = app();
+        let y = app.page.score.staves[0].lines[2];
+        app.page.score.add_note(400.0, y).unwrap();
+        for note in [1, 2] {
+            app.page.score.lyrics.push(Lyric {
+                note,
+                verse: 1,
+                placement: Default::default(),
+                verse_label: None,
+                text: format!("syllable-{note}"),
+                syllabic: Syllabic::Single,
+                extend: false,
+                confirmed: true,
+                bounds: None,
+            });
+        }
+        let mut span = Span {
+            staff: 0,
+            kind: SpanKind::Slur,
+            start: [300.0, y - 20.0],
+            end: [400.0, y - 20.0],
+            height: 8.0,
+            confirmed: true,
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
+        };
+        assert!(app.page.score.attach_span_note(&mut span, false, 1));
+        assert!(app.page.score.attach_span_note(&mut span, true, 2));
+        app.page.score.spans.push(span);
+        app.page.score.validate().unwrap();
+        let before = serde_json::to_value(&app.page.score).unwrap();
+        app.select_with_modifiers(Some(Object::Note(0)), egui::Modifiers::NONE);
+        app.select_with_modifiers(Some(Object::Rest(0)), egui::Modifiers::CTRL);
+        app.apply_batch_edit(BatchEdit::Voice(255));
+        assert_eq!(app.page.score.notes[0].voice, 255);
+        assert_eq!(app.page.score.rests[0].voice, 255);
+        assert_eq!(app.page.score.lyrics.len(), 2);
+        app.apply_batch_edit(BatchEdit::Delete);
+        assert_eq!(app.page.undo.len(), 2);
+        assert_eq!(app.page.score.notes.len(), 2);
+        assert!(app.page.score.rests.is_empty());
+        assert_eq!(
+            app.page
+                .score
+                .lyrics
+                .iter()
+                .map(|l| l.note)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            app.page.score.spans[0].start_anchor.as_ref().unwrap().note,
+            0
+        );
+        assert_eq!(app.page.score.spans[0].end_anchor.as_ref().unwrap().note, 1);
+        app.page.score.validate().unwrap();
+        app.undo();
+        app.undo();
+        assert_eq!(serde_json::to_value(&app.page.score).unwrap(), before);
+        app.redo();
+        app.redo();
+        app.page.score.validate().unwrap();
     }
 
     #[test]

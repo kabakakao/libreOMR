@@ -52,7 +52,7 @@ fn changing_language_translates_labels_and_diagnostics_but_preserves_score_data(
     );
 
     i18n::set_language(Language::German);
-    assert_eq!(Clef::Treble.label(), "Violinschluessel");
+    assert_eq!(Clef::Treble.label(), "Violinschlüssel");
     assert_eq!(KeySignature { fifths: -1 }.label(), "F-Dur / d-Moll");
     assert!(
         score.measure_validities(0)[0]
@@ -64,7 +64,7 @@ fn changing_language_translates_labels_and_diagnostics_but_preserves_score_data(
         german
             .warnings
             .iter()
-            .any(|warning| warning.contains("ungeprueft"))
+            .any(|warning| warning.contains("ungeprüft"))
     );
     assert!(
         german
@@ -76,7 +76,7 @@ fn changing_language_translates_labels_and_diagnostics_but_preserves_score_data(
         english
             .warnings
             .iter()
-            .any(|warning| warning.contains("voice 2"))
+            .any(|warning| warning.contains("Voice 2"))
     );
     assert!(
         german

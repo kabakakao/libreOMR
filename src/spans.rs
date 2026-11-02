@@ -1,7 +1,12 @@
 use image::{GrayImage, Luma, imageops};
 use imageproc::region_labelling::{Connectivity, connected_components};
 
-use crate::model::{Score, Span, SpanKind, Staff};
+use crate::model::{BowContinuation, NoteAnchor, Score, Span, SpanKind, Staff};
+
+#[cfg(test)]
+mod boundary_tests;
+mod contours;
+mod wedges;
 
 fn ink(image: &GrayImage, column: f32, row: f32) -> bool {
     let column = column.round() as i32;
@@ -22,17 +27,7 @@ fn support(image: &GrayImage, span: &Span, staff: &Staff, branch: f32) -> f32 {
         let point = if branch == 0.0 {
             span.curve_point(fraction)
         } else {
-            let opening = if span.kind == SpanKind::Crescendo {
-                fraction
-            } else {
-                1.0 - fraction
-            };
-            [
-                span.start[0] + (span.end[0] - span.start[0]) * fraction,
-                span.start[1]
-                    + (span.end[1] - span.start[1]) * fraction
-                    + branch * span.height * opening,
-            ]
+            span.wedge_point(fraction, branch)
         };
         if staff.lines.iter().any(|line| {
             (point[1] - line).abs() < gap * 0.16
@@ -69,6 +64,7 @@ fn support(image: &GrayImage, span: &Span, staff: &Staff, branch: f32) -> f32 {
 
 fn fit_bow(image: &GrayImage, staff: &Staff, mut span: Span) -> Option<Span> {
     let gap = staff.spacing();
+    let endpoints = [span.start[1], span.end[1]];
     for _iteration in 0..3 {
         let mut equations = [[0.0_f32; 4]; 3];
         let mut count = 0;
@@ -147,7 +143,8 @@ fn fit_bow(image: &GrayImage, staff: &Staff, mut span: Span) -> Option<Span> {
         }
         let height = equations[2][3];
         if height.signum() != span.height.signum()
-            || !(0.055..=0.32).contains(&(height.abs() / (span.end[0] - span.start[0])))
+            || height.abs() < gap * 0.35
+            || !(0.018..=0.32).contains(&(height.abs() / (span.end[0] - span.start[0])))
         {
             return None;
         }
@@ -155,11 +152,56 @@ fn fit_bow(image: &GrayImage, staff: &Staff, mut span: Span) -> Option<Span> {
         span.end[1] = equations[0][3] + equations[1][3];
         span.height = height;
     }
+    // A fit to unrelated ink can drift away from the very notes it proposes to join.
+    if (span.start[1] - endpoints[0]).abs() > gap * 0.5
+        || (span.end[1] - endpoints[1]).abs() > gap * 0.5
+    {
+        return None;
+    }
     Some(span)
+}
+
+fn continuous_bow(image: &GrayImage, staff: &Staff, span: &Span) -> bool {
+    let gap = staff.spacing();
+    let mut hits = [0; 4];
+    let mut missing = 0;
+    for sample in 0..64 {
+        let point = span.curve_point((sample as f32 + 0.5) / 64.0);
+        let found = (-(gap * 0.14).ceil() as i32..=(gap * 0.14).ceil() as i32)
+            .any(|dy| ink(image, point[0], point[1] + dy as f32));
+        if found {
+            hits[sample / 16] += 1;
+            missing = 0;
+        } else {
+            missing += 1;
+        }
+        if missing > 8 {
+            return false;
+        }
+    }
+    hits.iter().all(|&hit| hit >= 11)
+}
+
+fn bind_bow(score: &Score, span: &mut Span, first: usize, last: usize) {
+    let anchor = |note: usize, point: [f32; 2]| NoteAnchor {
+        note,
+        offset: [
+            point[0] - score.notes[note].x,
+            point[1] - score.notes[note].y,
+        ],
+    };
+    span.start_anchor = Some(anchor(first, span.start));
+    span.end_anchor = Some(anchor(last, span.end));
 }
 
 pub(crate) fn recognize(image: &GrayImage, score: &Score) -> Vec<Span> {
     let mut spans = Vec::new();
+    let contours: Vec<_> = score
+        .staves
+        .iter()
+        .enumerate()
+        .map(|(i, staff)| contours::curves(image, staff, i, &score.barlines))
+        .collect();
     for (staff_index, staff) in score.staves.iter().enumerate() {
         spans.extend(hairpins(image, staff, staff_index));
         let gap = staff.spacing();
@@ -170,32 +212,67 @@ pub(crate) fn recognize(image: &GrayImage, score: &Score) -> Vec<Span> {
             .collect();
         notes.sort_by(|first, second| first.x.total_cmp(&second.x));
         let mut candidates = Vec::new();
+        for curve in &contours[staff_index] {
+            if let Some((first, last)) = contours::endpoint_note(score, curve, false)
+                .zip(contours::endpoint_note(score, curve, true))
+                && score.bow_note_order(first, last)
+            {
+                let mut span = curve.clone();
+                span.kind = if score.tie_compatible(first, last) {
+                    SpanKind::Tie
+                } else {
+                    SpanKind::Slur
+                };
+                bind_bow(score, &mut span, first, last);
+                candidates.push((1.0, span));
+            }
+        }
         for (first_index, first) in notes.iter().enumerate() {
-            for (last_index, last) in notes.iter().enumerate().skip(first_index + 1) {
+            for last in notes.iter().skip(first_index + 1) {
                 let width = (last.x - first.x) / gap;
-                if width > 28.0 {
+                if width > 80.0 {
                     break;
                 }
                 if width < 1.1 {
                     continue;
                 }
+                let first_note = score
+                    .notes
+                    .iter()
+                    .position(|n| std::ptr::eq(n, *first))
+                    .unwrap();
+                let last_note = score
+                    .notes
+                    .iter()
+                    .position(|n| std::ptr::eq(n, *last))
+                    .unwrap();
+                let kind = if score.tie_compatible(first_note, last_note) {
+                    SpanKind::Tie
+                } else {
+                    SpanKind::Slur
+                };
                 for side in [-1.0, 1.0] {
+                    // Prefer measured contours to templates for the same notes.
+                    if candidates.iter().any(|(q, s)| {
+                        *q == 1.0
+                            && s.height.signum() == side
+                            && s.start_anchor
+                                .as_ref()
+                                .is_some_and(|a| a.note == first_note)
+                            && s.end_anchor.as_ref().is_some_and(|a| a.note == last_note)
+                    }) {
+                        continue;
+                    }
                     for offset in [0.1, 0.25, 0.4, 0.55, 0.8, 1.1, 1.4] {
-                        for height in [0.45, 0.65, 0.9, 1.2, 1.6, 2.1, 2.7] {
-                            if !(0.045..=0.28).contains(&(height / (width - 0.2))) {
+                        for height in [0.45, 0.65, 0.9, 1.2, 1.6, 2.1, 2.7, 3.6, 5.0] {
+                            if !(0.018..=0.28).contains(&(height / (width - 0.2))) {
                                 continue;
                             }
-                            let kind = if last_index == first_index + 1
-                                && first.pitch == last.pitch
-                                && first.accidental == last.accidental
-                                && !score.rests.iter().any(|rest| {
-                                    rest.staff == staff_index && rest.x > first.x && rest.x < last.x
-                                }) {
-                                SpanKind::Tie
-                            } else {
-                                SpanKind::Slur
-                            };
                             let span = Span {
+                                start_anchor: None,
+                                end_anchor: None,
+                                continuation: None,
+                                wedge_openings: None,
                                 staff: staff_index,
                                 kind,
                                 start: [first.x + gap * 0.1, first.y + side * gap * offset],
@@ -206,11 +283,22 @@ pub(crate) fn recognize(image: &GrayImage, score: &Score) -> Vec<Span> {
                             if support(image, &span, staff, 0.0) < 0.45 {
                                 continue;
                             }
-                            let Some(span) = fit_bow(image, staff, span) else {
+                            let Some(mut span) = fit_bow(image, staff, span) else {
                                 continue;
                             };
                             let quality = support(image, &span, staff, 0.0);
-                            if quality >= 0.8 {
+                            if quality >= 0.8 && continuous_bow(image, staff, &span) {
+                                let first = score
+                                    .notes
+                                    .iter()
+                                    .position(|note| std::ptr::eq(note, *first))
+                                    .unwrap();
+                                let last = score
+                                    .notes
+                                    .iter()
+                                    .position(|note| std::ptr::eq(note, *last))
+                                    .unwrap();
+                                bind_bow(score, &mut span, first, last);
                                 candidates.push((quality, span));
                             }
                         }
@@ -273,6 +361,8 @@ pub(crate) fn recognize(image: &GrayImage, score: &Score) -> Vec<Span> {
             spans.push(span);
         }
     }
+    spans.extend(continuations(image, score, &contours));
+    wedges::attach_and_connect(image, score, &mut spans);
     spans.sort_by(|first, second| {
         first
             .staff
@@ -280,6 +370,206 @@ pub(crate) fn recognize(image: &GrayImage, score: &Score) -> Vec<Span> {
             .then_with(|| first.start[0].total_cmp(&second.start[0]))
     });
     spans
+}
+
+/// Match both printed halves. A note near a margin alone is never a continuation.
+fn continuations(image: &GrayImage, score: &Score, contours: &[Vec<Span>]) -> Vec<Span> {
+    let mut result = Vec::new();
+    for staff_index in 0..score.staves.len() {
+        let rows = score.bow_staves(staff_index);
+        let Some(next_staff) = rows
+            .iter()
+            .position(|&s| s == staff_index)
+            .and_then(|i| rows.get(i + 1))
+            .copied()
+        else {
+            continue;
+        };
+        let mut outgoing: Vec<_> = score
+            .notes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.staff == staff_index)
+            .collect();
+        let mut incoming: Vec<_> = score
+            .notes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.staff == next_staff)
+            .collect();
+        outgoing.sort_by(|a, b| b.1.x.total_cmp(&a.1.x));
+        incoming.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+        for side in [-1.0, 1.0] {
+            let ends: Vec<_> = outgoing
+                .iter()
+                .take(4)
+                .filter_map(|&(index, note)| {
+                    observed_partial(score, &contours[staff_index], index, side, false)
+                        .or_else(|| {
+                            partial_bow(
+                                image,
+                                &score.staves[staff_index],
+                                staff_index,
+                                [note.x, note.y],
+                                side,
+                                false,
+                            )
+                        })
+                        .map(|(q, s)| (index, q, s))
+                })
+                .collect();
+            let starts: Vec<_> = incoming
+                .iter()
+                .take(4)
+                .filter_map(|&(index, note)| {
+                    observed_partial(score, &contours[next_staff], index, side, true)
+                        .or_else(|| {
+                            partial_bow(
+                                image,
+                                &score.staves[next_staff],
+                                next_staff,
+                                [note.x, note.y],
+                                side,
+                                true,
+                            )
+                        })
+                        .map(|(q, s)| (index, q, s))
+                })
+                .collect();
+            for voice in 1..=4 {
+                let pair = ends
+                    .iter()
+                    .filter(|(i, _, _)| score.notes[*i].voice == voice)
+                    .flat_map(|end| {
+                        starts
+                            .iter()
+                            .filter(|(i, _, _)| score.notes[*i].voice == voice)
+                            .map(move |start| (end, start))
+                    })
+                    .max_by(|(a, b), (c, d)| (a.1 + b.1).total_cmp(&(c.1 + d.1)));
+                let Some(((first, _, exit), (last, _, entry))) = pair else {
+                    continue;
+                };
+                let mut span = exit.clone();
+                span.end = entry.end;
+                span.kind = if score.tie_compatible(*first, *last) {
+                    SpanKind::Tie
+                } else {
+                    SpanKind::Slur
+                };
+                bind_bow(score, &mut span, *first, *last);
+                let upper = &score.staves[staff_index];
+                let lower = &score.staves[next_staff];
+                span.continuation = Some(BowContinuation {
+                    exit_x: (exit.end[0] - upper.right) / upper.spacing(),
+                    entry_x: (entry.start[0] - lower.left) / lower.spacing(),
+                    exit_y: (exit.end[1] - upper.lines[0]) / upper.spacing(),
+                    entry_y: (entry.start[1] - lower.lines[0]) / lower.spacing(),
+                    exit_height: exit.height / upper.spacing(),
+                    entry_height: entry.height / lower.spacing(),
+                });
+                result.push(span);
+            }
+        }
+    }
+    result
+}
+
+fn observed_partial(
+    score: &Score,
+    curves: &[Span],
+    note: usize,
+    side: f32,
+    incoming: bool,
+) -> Option<(f32, Span)> {
+    let staff = &score.staves[score.notes[note].staff];
+    let gap = staff.spacing();
+    let header_end = [&staff.header.clef_bounds, &staff.header.time_bounds]
+        .into_iter()
+        .flatten()
+        .chain(staff.header.key_bounds.iter())
+        .map(|b| b.right)
+        .fold(staff.left, f32::max);
+    curves
+        .iter()
+        .filter(|curve| {
+            curve.height.signum() == side
+                && contours::endpoint_note(score, curve, incoming) == Some(note)
+                && contours::endpoint_note(score, curve, !incoming).is_none()
+                && if incoming {
+                    curve.start[0] >= header_end - gap * 0.4
+                        && curve.start[0] <= header_end + gap * 2.5
+                } else {
+                    curve.end[0] >= staff.right - gap * 2.5
+                }
+        })
+        .max_by(|a, b| (a.end[0] - a.start[0]).total_cmp(&(b.end[0] - b.start[0])))
+        .map(|s| (1.0, s.clone()))
+}
+
+fn partial_bow(
+    image: &GrayImage,
+    staff: &Staff,
+    staff_index: usize,
+    note: [f32; 2],
+    side: f32,
+    incoming: bool,
+) -> Option<(f32, Span)> {
+    let gap = staff.spacing();
+    let mut best: Option<(f32, Span)> = None;
+    for margin in if incoming {
+        &[0.25, 1.0, 2.0, 3.0, 4.0][..]
+    } else {
+        &[0.25, 0.75][..]
+    } {
+        let edge = if incoming {
+            staff.left + gap * margin
+        } else {
+            staff.right - gap * margin
+        };
+        let width = if incoming {
+            note[0] - edge
+        } else {
+            edge - note[0]
+        };
+        if !(2.0..=28.0).contains(&(width / gap)) {
+            continue;
+        }
+        for offset in [0.25, 0.55, 0.8, 1.1, 1.4] {
+            for rise in [0.6, 1.0, 1.5, 2.0] {
+                for height in [0.45, 0.65, 0.9, 1.2] {
+                    let tip = [note[0], note[1] + side * gap * offset];
+                    let boundary = [edge, tip[1] + side * gap * rise];
+                    let span = Span {
+                        staff: staff_index,
+                        kind: SpanKind::Slur,
+                        start_anchor: None,
+                        end_anchor: None,
+                        continuation: None,
+                        wedge_openings: None,
+                        start: if incoming { boundary } else { tip },
+                        end: if incoming { tip } else { boundary },
+                        height: side * gap * height,
+                        confirmed: false,
+                    };
+                    if support(image, &span, staff, 0.0) < 0.55 {
+                        continue;
+                    }
+                    let Some(span) = fit_bow(image, staff, span) else {
+                        continue;
+                    };
+                    let quality = support(image, &span, staff, 0.0);
+                    if quality < 0.9 || !continuous_bow(image, staff, &span) {
+                        continue;
+                    }
+                    if best.as_ref().is_none_or(|(q, _)| quality > *q) {
+                        best = Some((quality, span));
+                    }
+                }
+            }
+        }
+    }
+    best
 }
 
 fn hairpins(image: &GrayImage, staff: &Staff, staff_index: usize) -> Vec<Span> {
@@ -377,6 +667,10 @@ fn hairpins(image: &GrayImage, staff: &Staff, staff_index: usize) -> Vec<Span> {
             continue;
         };
         let span = Span {
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
             staff: staff_index,
             kind,
             start: [
@@ -402,7 +696,78 @@ mod tests {
     use super::*;
     use crate::model::{Clef, StaffHeader};
 
-    fn fixture(scale: f32) -> (GrayImage, Score) {
+    #[test]
+    #[ignore = "requires the local Concerto_d_Amore_-_BassCf.pdf reference score"]
+    fn concerto_bass_reference_bows() {
+        std::fs::create_dir_all("local/bow-analysis").unwrap();
+        let (image, mut score) = if std::env::var_os("LIBREOMR_BOW_CACHE").is_some() {
+            let image = image::open("local/bow-analysis/reference-page.png")
+                .unwrap()
+                .to_luma8();
+            let score: Score = serde_json::from_slice(
+                &std::fs::read("local/bow-analysis/reference-score.json").unwrap(),
+            )
+            .unwrap();
+            (image, score)
+        } else {
+            let page = crate::document_import::open_document(std::path::Path::new(
+                "Concerto_d_Amore_-_BassCf.pdf",
+            ))
+            .unwrap()
+            .remove(0);
+            let image = page.render().unwrap();
+            let score = crate::recognition::recognize_with_progress(&image, |progress| {
+                if progress.staff.is_none() {
+                    eprintln!("{}", progress.stage);
+                }
+            });
+            (image, score)
+        };
+        let binary =
+            imageproc::contrast::threshold(&image, 170, imageproc::contrast::ThresholdType::Binary);
+        score.spans = recognize(&binary, &score);
+        score.recompute_accidentals();
+        std::fs::write(
+            "local/bow-analysis/improved-score.json",
+            serde_json::to_vec_pretty(&score).unwrap(),
+        )
+        .unwrap();
+        score.validate().unwrap();
+        for (name, from_staff, from_x, to_staff, to_x) in [
+            ("measure 9 to 10", 1, 1057.0, 1, 1146.0),
+            ("measure 13 to 14", 1, 2297.0, 2, 366.0),
+        ] {
+            let note_at = |staff, x: f32| {
+                score
+                    .notes
+                    .iter()
+                    .position(|n| n.staff == staff && (n.x - x).abs() < 5.0)
+                    .unwrap()
+            };
+            let a = note_at(from_staff, from_x);
+            let b = note_at(to_staff, to_x);
+            let found: Vec<_> = score
+                .spans
+                .iter()
+                .filter(|s| {
+                    s.kind == SpanKind::Tie
+                        && s.start_anchor.as_ref().is_some_and(|n| n.note == a)
+                        && s.end_anchor.as_ref().is_some_and(|n| n.note == b)
+                })
+                .collect();
+            assert_eq!(found.len(), 1, "missing or duplicated {name}");
+            assert_eq!(
+                score.span_segments(found[0]).len(),
+                if from_staff == to_staff { 1 } else { 2 }
+            );
+            eprintln!(
+                "{name}: {:?} -> {:?}",
+                found[0].start_anchor, found[0].end_anchor
+            );
+        }
+    }
+
+    pub(super) fn fixture(scale: f32) -> (GrayImage, Score) {
         let image =
             GrayImage::from_pixel((640.0 * scale) as u32, (300.0 * scale) as u32, Luma([255]));
         let mut score = Score {
@@ -422,7 +787,7 @@ mod tests {
         (image, score)
     }
 
-    fn draw(image: &mut GrayImage, span: &Span) {
+    pub(super) fn draw(image: &mut GrayImage, span: &Span) {
         for sample in 0..120 {
             let fraction = sample as f32 / 120.0;
             let next = (sample + 1) as f32 / 120.0;
@@ -438,15 +803,8 @@ mod tests {
             } else {
                 for side in [-1.0, 1.0] {
                     let point = |part: f32| {
-                        let opening = if span.kind == SpanKind::Crescendo {
-                            part
-                        } else {
-                            1.0 - part
-                        };
-                        (
-                            span.start[0] + (span.end[0] - span.start[0]) * part,
-                            span.start[1] + side * span.height * opening,
-                        )
+                        let p = span.wedge_point(part, side);
+                        (p[0], p[1])
                     };
                     imageproc::drawing::draw_line_segment_mut(
                         image,
@@ -471,6 +829,10 @@ mod tests {
                         score.notes[1].y -= 20.0 * scale;
                     }
                     let span = Span {
+                        start_anchor: None,
+                        end_anchor: None,
+                        continuation: None,
+                        wedge_openings: None,
                         staff: 0,
                         kind,
                         start: [
@@ -527,6 +889,10 @@ mod tests {
             draw(
                 &mut image,
                 &Span {
+                    start_anchor: None,
+                    end_anchor: None,
+                    continuation: None,
+                    wedge_openings: None,
                     staff: 0,
                     kind: SpanKind::Slur,
                     start: [152.0, 166.0],
@@ -565,6 +931,10 @@ mod tests {
                     draw(
                         &mut image,
                         &Span {
+                            start_anchor: None,
+                            end_anchor: None,
+                            continuation: None,
+                            wedge_openings: None,
                             staff: 0,
                             kind,
                             start: [152.0 * scale, row],
@@ -610,6 +980,109 @@ mod tests {
             (550.0, 235.0),
             Luma([0]),
         );
+        assert!(recognize(&image, &score).is_empty());
+    }
+
+    #[test]
+    fn connects_both_halves_across_system_breaks_and_keeps_the_scan_geometry() {
+        for scale in [0.75, 1.0, 1.5] {
+            for side in [-1.0, 1.0] {
+                let (mut image, mut score) = fixture(scale);
+                image = GrayImage::from_pixel(image.width(), (700.0 * scale) as u32, Luma([255]));
+                score.notes.clear();
+                let mut next = score.staves[0].clone();
+                next.lines = next.lines.map(|y| y + 300.0 * scale);
+                score.staves.push(next);
+                score.add_note(500.0 * scale, 150.0 * scale);
+                score.add_note(150.0 * scale, 450.0 * scale);
+                let exit = Span {
+                    staff: 0,
+                    kind: SpanKind::Tie,
+                    start_anchor: None,
+                    end_anchor: None,
+                    continuation: None,
+                    wedge_openings: None,
+                    start: [500.0 * scale, (150.0 + side * 16.0) * scale],
+                    end: [615.0 * scale, (150.0 + side * 36.0) * scale],
+                    height: side * 13.0 * scale,
+                    confirmed: false,
+                };
+                let entry = Span {
+                    staff: 1,
+                    start: [25.0 * scale, (450.0 + side * 36.0) * scale],
+                    end: [150.0 * scale, (450.0 + side * 16.0) * scale],
+                    ..exit.clone()
+                };
+                draw(&mut image, &exit);
+                assert!(
+                    recognize(&image, &score).is_empty(),
+                    "one half is insufficient"
+                );
+                draw(&mut image, &entry);
+                let spans = recognize(&image, &score);
+                assert_eq!(spans.len(), 1, "scale {scale}, side {side}: {spans:?}");
+                assert_eq!(spans[0].kind, SpanKind::Tie);
+                assert_eq!(spans[0].start_anchor.as_ref().unwrap().note, 0);
+                assert_eq!(spans[0].end_anchor.as_ref().unwrap().note, 1);
+                for segment in score.span_segments(&spans[0]) {
+                    assert!(
+                        support(&image, &segment, &score.staves[segment.staff], 0.0) >= 0.85,
+                        "{segment:?}"
+                    );
+                }
+                score.spans = spans;
+                assert!(score.validate().is_ok());
+                let restored: Score =
+                    serde_json::from_slice(&serde_json::to_vec(&score).unwrap()).unwrap();
+                assert!(restored.validate().is_ok());
+                assert!(restored.spans[0].continuation.is_some());
+                score.staff_assignments = vec![
+                    crate::model::StaffAssignment {
+                        staff: 0,
+                        part: 0,
+                        system: 0,
+                        name: "A".into(),
+                    },
+                    crate::model::StaffAssignment {
+                        staff: 1,
+                        part: 1,
+                        system: 0,
+                        name: "B".into(),
+                    },
+                ];
+                assert!(
+                    recognize(&image, &score).is_empty(),
+                    "simultaneous parts cannot form a continuation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detects_long_shallow_bows_but_rejects_curves_far_from_the_notes() {
+        let (mut image, mut score) = fixture(1.0);
+        image = GrayImage::from_pixel(1400, image.height(), Luma([255]));
+        score.staves[0].right = 1380.0;
+        score.notes[1].x = 1250.0;
+        let mut span = Span {
+            staff: 0,
+            kind: SpanKind::Tie,
+            start_anchor: None,
+            end_anchor: None,
+            continuation: None,
+            wedge_openings: None,
+            start: [152.0, 166.0],
+            end: [1248.0, 166.0],
+            height: 24.0,
+            confirmed: false,
+        };
+        draw(&mut image, &span);
+        let detected = recognize(&image, &score);
+        assert_eq!(detected.len(), 1, "{detected:?}");
+        image.fill(255);
+        span.start[1] = 40.0;
+        span.end[1] = 40.0;
+        draw(&mut image, &span);
         assert!(recognize(&image, &score).is_empty());
     }
 }
