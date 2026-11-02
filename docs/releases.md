@@ -17,7 +17,7 @@ The matrix uses Ubuntu 22.04, `windows-latest` for Windows x86_64,
 Windows ARM64 is built and tested with the native
 `stable-aarch64-pc-windows-msvc` Rust toolchain. Both Windows variants receive
 separate ZIP archives whose filenames identify the architecture, for example
-`libreomr-0.1.2-aarch64-pc-windows-msvc.zip` for ARM64.
+`libreomr-0.2.0-aarch64-pc-windows-msvc.zip` for ARM64.
 
 The fixed Ubuntu version limits the required glibc version; the application is
 still dynamically linked against desktop system libraries. Packages are portable
@@ -26,22 +26,22 @@ not signed or notarized.
 
 ## Prepare a release
 
-1. Set the version in `Cargo.toml`, for example `0.1.2` or `0.1.2-beta.1`.
+1. Set the version in `Cargo.toml`, for example `0.2.0` or `0.2.0-beta.1`.
 2. Run `cargo check --locked`. After changing the version, first run `cargo check`
    to update the project's version in `Cargo.lock`.
 3. Prepare `docs/release-notes/<version>.md`, for example
-   `docs/release-notes/0.1.2.md`. The workflow verifies that it exists and is not
+   `docs/release-notes/0.2.0.md`. The workflow verifies that it exists and is not
    empty, then uses its contents for the release draft.
 4. Commit the changes, including `Cargo.lock` and release notes, and push to
    `main`. Wait for the regular CI run to succeed.
 5. Tag the intended commit with the exact matching version and push the tag:
 
 ```sh
-git tag -a v0.1.2 -m "libreOMR 0.1.2"
-git push origin v0.1.2
+git tag -a v0.2.0 -m "libreOMR 0.2.0"
+git push origin v0.2.0
 ```
 
-For a prerelease, use a tag such as `v0.1.2-beta.1`. A tag alone does not publish
+For a prerelease, use a tag such as `v0.2.0-beta.1`. A tag alone does not publish
 a release. The `Release` workflow first checks the version against `Cargo.toml`,
 then runs all quality checks and tests again for that exact commit. Only then
 does it build the four platform packages with `cargo build --release --locked`.
@@ -114,10 +114,10 @@ Official packages require a clean checkout, the release profile and a matching
 version:
 
 ```sh
-python3 scripts/package_release.py --check-tag v0.1.2
+python3 scripts/package_release.py --check-tag v0.2.0
 cargo build --release --locked
-python3 scripts/package_release.py --profile release --release-tag v0.1.2
-python3 scripts/package_release.py --source-tag v0.1.2
+python3 scripts/package_release.py --profile release --release-tag v0.2.0
+python3 scripts/package_release.py --source-tag v0.2.0
 ```
 
 The Apple Silicon app bundle is created automatically on macOS. To create a

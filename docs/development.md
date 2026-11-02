@@ -44,7 +44,12 @@ are required. See [Screenshots](../assets/screenshots/README.md) for captures.
 ## Architecture
 
 - `src/model.rs`: notes, rests, measure boundaries, measure-scoped accidentals,
-  staff key signatures, slurs/ties/wedges and the versioned project format.
+  staff key signatures, part assignments, lyrics, slurs/ties/wedges and the
+  versioned project format.
+- `src/score_structure.rs`: bracketed system grouping, persistent part proposals,
+  positioned lyric alignment and safe lyric references when notes are deleted.
+- `src/pdf_text.rs`: native positioned Unicode extraction using the PDF
+  rasterizer's crop, rotation and scale transform.
 - `src/rhythm.rs`: sums note values per measure and compares them with the active
   time signature for validity overlays in the scan and preview.
 - `src/recognition.rs`: conservative deskewing, binarization and connected
@@ -86,6 +91,21 @@ under SIL Open Font License 1.1. Include
 [assets/Bravura-LICENSE.txt](../assets/Bravura-LICENSE.txt) when distributing the
 font or a package containing it. Templates do not store crops from user scores.
 
+## Manual voices and multiple selection
+
+Notes and rests store a voice number from 1 to 4, defaulting to 1 when an older
+project omits the field. The editor supports Ctrl/Cmd toggles and Shift ranges
+across the scan, preview and object list. Shared voice/duration edits and
+selection deletion create one history entry; note deletion retains lyric
+reference cleanup. Measure validity checks every voice separately, and
+MusicXML emits voice elements and backs up the cursor between voices in each
+measure. Onsets within a voice still follow source position and written values;
+missing leading events must be represented by rests. Recognition initially
+assigns voice 1, so independent voices require manual assignment.
+
+Regression coverage: `cargo test --profile ci --locked --test staff_voices`
+and `cargo test --profile ci --locked --bin libreomr multiselect`.
+
 ## Limitations and next steps
 
 The baseline may fail or produce false notes on skewed scans, short staves,
@@ -101,8 +121,9 @@ Clef recognition is limited to staff starts and can fail with unfamiliar fonts
 or damaged symbols. Weak/ambiguous matches remain unknown, though false
 classifications are still possible. Preview and MusicXML carry the time signature
 forward until another printed or manually inserted signature. Staves form one
-continuous part without instrument/voice assignment. Key signatures are not
-inherited across staves. An empty key signature is confirmed only when a clear
+continuous part when unassigned; bracketed systems can carry separate parts
+across pages. Independent voices sharing a staff are not reconstructed.
+An empty key signature is confirmed only when a clear
 gap is observed between recognized clef and meter; otherwise it stays unknown.
 
 Rest recognition targets upright, largely isolated standard shapes. Short rests
@@ -123,27 +144,66 @@ values sharing a beam and a visible 3. Bracketed triplets, mixed values, dotted
 triplet notes and other tuplets are not assigned automatically. Values shorter
 than sixty-fourths and full temporal measure/voice reconstruction are absent.
 
-Wedges and slurs/ties are heuristic and incomplete. Bows between adjacent notes
-with the same pitch and accidental and no intervening rest are proposed as ties;
-ambiguous types remain editable. Nested, heavily overlapping and cross-staff bows
-and voice assignment are not specifically supported. Text such as `cresc.` or
-`dim.` is not read. Symbols store image coordinates rather than fixed note links;
-check endpoints after correcting notes. Tie playback and rhythmic merging are
-not implemented.
+Wedges and slurs/ties are heuristic and incomplete. Bow fitting checks endpoint
+proximity, curvature and continuous contour support, including longer, shallow
+curves. Thin connected curves also supply measured endpoints at notehead edges,
+including short ties; known crossing barlines are excluded from the curve fit.
+Bows between adjacent notes with the same pitch and voice and no intervening
+rest are proposed as ties; chord tones at an endpoint do not interrupt them.
+An implicit accidental on a tied note carries across barlines and systems,
+including in MusicXML. Explicit conflicting accidentals still prevent a tie.
+Both printed halves of a continuation can be joined across consecutive systems
+of the same part on one page. Automatic matching searches the last/first four
+notes, allows short curved fragments and starts after clef/key/time headers,
+and requires strong evidence on both halves. Nested, heavily overlapping,
+cross-staff and cross-page bows remain unsupported by automatic recognition.
+
+Bows store optional note references and endpoint offsets. Drag a handle onto a
+note in the scan or preview, or select start/end notes in the properties editor.
+Selecting two notes before adding a bow attaches it to both, including across
+systems on the same page. Attached endpoints follow note corrections; deleting
+an attached note removes the bow. The flip button changes the curvature and
+the side of attached endpoints. Scan and preview split continuations at system
+breaks; MusicXML emits one matching start/stop pair. Older coordinate-only bows
+remain editable and use geometric fallback anchoring for export. Text such as
+`cresc.` or `dim.` is not read. Tie playback and rhythmic merging are not
+implemented.
+
+Crescendo/decrescendo wedges share the optional note anchors, drag handles and
+multi-system editing. Their drawing stores relative endpoint openings so that
+intermediate system fragments remain open at both ends. Continued printed
+wedges can be matched across adjacent systems of the same part when both
+branches, margin positions, direction, vertical levels and openings agree;
+separate complete wedges are not joined. The single-break geometry preserves
+the observed openings, while manual spans can cross multiple systems.
+MusicXML assigns wedge numbers across systems and places anchored directions
+at the exact onset in the anchor's voice, independent of visual offsets. Free
+wedges retain interpolation on the rhythmic timeline, including multirests.
+Legacy projects without anchors or opening data keep their original shape.
+
+The ignored `concerto_bass_reference_bows` test uses the private root-level
+`Concerto_d_Amore_-_BassCf.pdf` to check ties in measures 9–10 and 13–14.
+Run `cargo test --profile ci --lib concerto_bass_reference_bows -- --ignored --nocapture`.
+Its rendered diagnostics remain under ignored `local/bow-analysis/`. The nearly
+staff-line-merged tie in measure 5 is deliberately not a detection requirement.
+
+Regression coverage: `cargo test --profile ci --locked --test bow_anchors`,
+`cargo test --profile ci --locked --lib spans::tests` and
+`cargo test --profile ci --locked --bin libreomr bow_tests`.
 
 Articulations are searched near the note axis using shape, size and Bravura
 templates. Separate fermata components and combined symbols are compared
 together. Cleanup checks actual continuous lines to preserve marks near heads.
 Stem/slur overlap, close barlines, text and unfamiliar fonts can still cause
 missing or false proposals. Each note has one articulation selection, including
-combinations. There is no voice assignment.
+combinations. Independent voices sharing a staff are not assigned.
 
 Dynamic letters must be largely isolated above/below the staff, within six
 spacings. Connected groups are matched together so `pp` is not reduced to `p`.
 Additional text, collisions, damage and other fonts can prevent recognition.
 Assignment between staves considers distance to the staff edge, preferring the
 usual position below a staff. Proposals remain unreviewed. MusicXML places them
-by horizontal position in the existing single-part model; this does not reconstruct
+by horizontal position within each exported part; this does not reconstruct
 independent rhythmic timing.
 
 Clef changes within a staff are not implemented. Printed meter changes are
@@ -154,6 +214,17 @@ other digits remain excluded. Anchors are checked even when a meter digit first
 resembles a note. Weak clef matches are realigned to local staff lines, and
 slightly curved row ends are tracked across multiple lines to retain courtesy
 changes at the edge.
+
+The time-change matcher prepares all 1,351 scaled templates once for the 194
+supported meters. At each anchor it checks geometry before correlation and
+shares valid positions and source energies between templates of equal size.
+An integral image rejects empty windows; a conservative block-energy bound
+skips correlations that cannot reach the quality threshold. Only nonzero
+template pixels participate in the dot product, in the original order.
+Candidate positions, quality thresholds and ambiguity checks are
+unchanged. A test-only copy of the exhaustive matcher checks identical score
+objects against the optimized search. See [Time-change performance](../benchmarks/time-change-performance.md)
+for measurements and reproduction commands.
 
 Internal key changes are proposed at detected measure boundaries as compact,
 ordered groups with at least two symbols. Flats, sharps and matching leading
@@ -192,9 +263,12 @@ Priorities for further development:
 3. Model-based symbol recognition with uncertain candidates for review.
 4. A richer model for clef changes, keys, measures, voices, chords, polyphonic
    rests, semantic note links and rhythmic plausibility.
-5. Polyphonic MusicXML export and MIDI playback. Current single-part export
-   does not replace rhythmic/voice reconstruction.
+5. Same-staff polyphonic MusicXML export and MIDI playback. Current part-based
+   export does not replace rhythmic/voice reconstruction within a staff.
 6. Installable packages for Linux, Windows and macOS.
+
+See [Polyphonic scores and lyrics](polyphonic-scores-and-lyrics.md) for the
+SATB sample analysis, model/export gaps and proposed implementation milestones.
 
 ## Existing OMR engines
 
@@ -421,3 +495,22 @@ flats and one flat:
 LIBREOMR_KULTTOUR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \
 cargo test --release --locked --no-default-features external_kulttour_headers_on_all_pages -- --ignored
 ```
+
+Scans without positioned PDF text use `rusto-rs` with its default features
+disabled and RTen for inference in Rust. RTen requires Rust 1.94 or newer.
+The multilingual PP-OCRv6 Tiny
+models and dictionary are embedded from `assets/ocr/`; that directory records
+provenance, checksums and the upstream license. Model files are materialized
+in a temporary directory during initialization, then removed. No page data
+is sent to external services. Native text layers retain their original bounds.
+OCR first reads the page, then refines the spaces between staves at higher
+resolution. It runs in the import worker and reports progress/errors through
+the existing job interface. Neither platform OCR APIs nor external executables
+are required. The same implementation is compiled on all supported targets.
+
+Staff detection supplements the full-width projection with agreement between
+several local strips, then estimates horizontal boundaries from support across
+four staff lines. This recovers gently curved scan rows and excludes isolated
+page borders. Global deskew acceptance still uses the full-width projection.
+Lyrics can be attached above or below the same note; placement is part of their
+identity and survives project serialization, editing, preview and MusicXML.
