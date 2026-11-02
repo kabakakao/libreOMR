@@ -18,6 +18,7 @@ templates. Results require musical review and correction.
 - Recognize and edit notes, rests, clefs, accidentals and time signatures.
 - Review and add articulations, dynamics, slurs, ties and repeat marks.
 - Compare the original image, recognized objects and notation preview directly.
+- Select and edit multiple notes/rests together, including voices and tuplets.
 - Undo corrections and save projects with embedded score images.
 - Export all pages together as MusicXML 4.0 for further work in tools such as MuseScore.
 - Use English or German, with the system language selected by default.
@@ -175,6 +176,22 @@ Move or delete incorrect objects. Use the score image's context menu to insert
 missing notes, rests and other symbols. Clef, key signature and time signature
 are available under **Staff information**. You can undo and redo changes.
 
+Use **Ctrl-click** (**Cmd-click** on macOS) to add or remove notes and rests
+from the selection. **Shift-click** selects a range in the scan, preview or
+object list. Shared edits include voice, duration, dots, tuplets and review
+status; notes also support shared notehead size, grace status and articulation.
+Mixed values stay unchanged until explicitly edited. Each shared edit, including
+deletion, can be undone in one step.
+
+For cue notes, assign the selected notes and rests to **Voice: 2**. Each voice
+starts at the measure boundary and is checked and exported independently; add
+preceding rests for later entries. In polyphonic measures, odd voices have
+upward stems and even voices downward stems, with rests offset accordingly.
+Notes sharing a head can be selected by their individual stems. Small noteheads
+change size independently of voice; grace notes do not add measure duration.
+Rest tuplets support **Triplet 3:2**, **Septuplet 7:4** and custom ratios.
+Multimeasure rests retain their duration during shared duration/dot/tuplet edits.
+
 Confirm a reviewed object with the circle in the object list. **F6** jumps to
 the next unreviewed object. Confirmation records your review; the rest of the
 score still needs checking.
@@ -253,7 +270,9 @@ libreOMR is primarily suitable for trying the workflow on clear, printed
 single-part scores. Skewed or damaged scans, dense beaming, unfamiliar fonts
 and overlapping symbols can cause missing or incorrect proposals.
 
-Export treats staves as **one continuous part**. Full reconstruction of
+Export treats staves as **one continuous part**. Within a staff, notes and rests
+can be assigned to independent rhythmic voices manually; recognition initially
+assigns every object to voice 1. Full reconstruction of
 polyphonic piano or orchestral scores, automatic instrument assignment and
 transposition are not implemented. The preview shows the edited recognition
 state; beaming and page layout are not reconstructed faithfully. Error-free

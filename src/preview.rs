@@ -10,6 +10,80 @@ use libreomr::model::{
 use libreomr::rhythm::MeasureValidity;
 
 const GAP: f32 = 12.0;
+// A second voice keeps its lower placement even in a measure where voice 1 is silent.
+// Voice 1 uses ordinary pitch-based stems again in measures without other voices.
+struct VoiceLayout {
+    bars: Vec<f32>,
+    secondary: Vec<bool>,
+}
+
+impl VoiceLayout {
+    fn new(score: &Score, staff: usize) -> Self {
+        let mut bars: Vec<_> = score
+            .barlines
+            .iter()
+            .filter(|bar| bar.staff == staff)
+            .map(|bar| bar.x)
+            .collect();
+        bars.sort_by(f32::total_cmp);
+        let mut secondary = vec![false; bars.len() + 1];
+        for x in score
+            .notes
+            .iter()
+            .filter(|note| note.staff == staff && note.voice > 1)
+            .map(|note| note.x)
+            .chain(
+                score
+                    .rests
+                    .iter()
+                    .filter(|rest| rest.staff == staff && rest.voice > 1)
+                    .map(|rest| rest.x),
+            )
+        {
+            secondary[bars.partition_point(|bar| *bar <= x)] = true;
+        }
+        Self { bars, secondary }
+    }
+
+    fn polyphonic(&self, x: f32) -> bool {
+        self.secondary[self.bars.partition_point(|bar| *bar <= x)]
+    }
+
+    fn stem_down(&self, x: f32, voice: u8, level: f32) -> bool {
+        if voice > 1 || self.polyphonic(x) {
+            voice.is_multiple_of(2)
+        } else {
+            level <= 2.0
+        }
+    }
+
+    fn rest_offset(&self, x: f32, voice: u8) -> f32 {
+        if voice > 1 || self.polyphonic(x) {
+            if voice.is_multiple_of(2) { 2.0 } else { -2.0 }
+        } else {
+            0.0
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ViewMode {
+    Row,
+    Object { polyphonic: bool },
+}
+
+fn rest_glyph(duration: Duration) -> (char, f32, f32, f32) {
+    match duration {
+        Duration::Whole => ('\u{e4e3}', 0.5, 1.0, 0.0),
+        Duration::Half => ('\u{e4e4}', 0.5, 2.0, 1.0),
+        Duration::Quarter => ('\u{e4e5}', 2.8, 2.0, 0.5),
+        Duration::Eighth => ('\u{e4e6}', 1.8, 2.0, 0.5),
+        Duration::Sixteenth => ('\u{e4e7}', 2.8, 2.0, 0.5),
+        Duration::ThirtySecond => ('\u{e4e8}', 3.8, 2.0, 0.5),
+        Duration::SixtyFourth => ('\u{e4e9}', 4.8, 2.0, 0.5),
+    }
+}
+
 pub(crate) fn paint_measure_validity(
     ui: &egui::Ui,
     measure: &MeasureValidity,
@@ -238,6 +312,7 @@ pub(crate) struct Preview {
     scale: f32,
     anchor_drag: Option<AnchorDrag>,
     anchor_edit: Option<AnchorEdit>,
+    pub(crate) additional_selection: Vec<Selection>,
 }
 
 pub(crate) struct AnchorEdit {
@@ -288,6 +363,7 @@ impl Default for Preview {
             scale: 1.0,
             anchor_drag: None,
             anchor_edit: None,
+            additional_selection: vec![],
         }
     }
 }
@@ -454,7 +530,7 @@ impl Preview {
         inherited: Option<TimeSignature>,
     ) -> Option<Selection> {
         self.anchor_edit = None;
-        let clicked = self.show_score(ui, score, staff_index, selected, false, inherited);
+        let clicked = self.show_score(ui, score, staff_index, selected, ViewMode::Row, inherited);
         if !ui.input(|input| input.pointer.primary_down()) {
             self.anchor_drag = None;
         }
@@ -475,11 +551,27 @@ impl Preview {
         let Some(isolated) = Self::isolate_object(score, selected) else {
             return;
         };
+        let polyphonic = match selected {
+            Selection::Note(i) => {
+                VoiceLayout::new(score, score.notes[i].staff).polyphonic(score.notes[i].x)
+            }
+            Selection::Rest(i) => {
+                VoiceLayout::new(score, score.rests[i].staff).polyphonic(score.rests[i].x)
+            }
+            _ => false,
+        };
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), height),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
-                self.show_score(ui, &isolated, 0, None, true, None);
+                self.show_score(
+                    ui,
+                    &isolated,
+                    0,
+                    None,
+                    ViewMode::Object { polyphonic },
+                    None,
+                );
             },
         );
     }
@@ -625,13 +717,18 @@ impl Preview {
         score: &Score,
         staff_index: usize,
         selected: Option<Selection>,
-        fit_object: bool,
+        mode: ViewMode,
         inherited: Option<TimeSignature>,
     ) -> Option<Selection> {
         let Some(staff) = score.staves.get(staff_index) else {
             ui.label(i18n::tr("No staff"));
             return None;
         };
+        let fit_object = matches!(mode, ViewMode::Object { .. });
+        let mut voices = VoiceLayout::new(score, staff_index);
+        if let ViewMode::Object { polyphonic } = mode {
+            voices.secondary.fill(polyphonic);
+        }
         let time_signature =
             score.time_signature_before_with_inherited(staff_index, staff.left, inherited);
         let measures = if fit_object {
@@ -703,8 +800,18 @@ impl Preview {
         for (index, &(source_x, item)) in items.iter().enumerate() {
             if index > 0 {
                 let (previous_x, previous_item) = items[index - 1];
-                let chord = matches!((item, previous_item), (Item::Note(_), Item::Note(_)))
-                    && (source_x - previous_x).abs() < staff.spacing() * 0.2;
+                let voice = |item| match item {
+                    Item::Note(i) => Some(score.notes[i].voice),
+                    Item::Rest(i) => Some(score.rests[i].voice),
+                    _ => None,
+                };
+                let simultaneous = voice(item)
+                    .zip(voice(previous_item))
+                    .is_some_and(|(a, b)| a != b)
+                    && (source_x - previous_x).abs() <= staff.spacing() * 0.35;
+                let chord = simultaneous
+                    || (matches!((item, previous_item), (Item::Note(_), Item::Note(_)))
+                        && (source_x - previous_x).abs() < staff.spacing() * 0.2);
                 if !chord {
                     cursor += ((source_x - previous_x) / staff.spacing() * GAP).clamp(
                         (item.width(score) + previous_item.width(score)) / 2.0,
@@ -737,7 +844,7 @@ impl Preview {
         }
         for note in score.notes.iter().filter(|note| note.staff == staff_index) {
             let level = relative(note.pitch);
-            let down = level <= 2.0;
+            let down = voices.stem_down(note.x, note.voice, level);
             upper = upper.min(level - 0.6);
             lower = lower.max(level + 0.6);
             if note.duration != Duration::Whole {
@@ -793,19 +900,31 @@ impl Preview {
                 lower = lower.max(mark + half_height);
             }
         }
-        if score
-            .rests
-            .iter()
-            .any(|rest| rest.staff == staff_index && rest.measures.is_some())
-        {
-            upper = upper.min(-2.7);
-        }
-        for rest in score
-            .rests
-            .iter()
-            .filter(|rest| rest.staff == staff_index && rest.fermata)
-        {
-            upper = upper.min(if rest.measures.is_some() { -4.2 } else { -2.0 });
+        for rest in score.rests.iter().filter(|rest| rest.staff == staff_index) {
+            let offset = voices.rest_offset(rest.x, rest.voice);
+            if rest.measures.is_some() {
+                upper = upper.min(-2.7 + offset);
+                lower = lower.max(3.1 + offset);
+            } else {
+                let (_, height, level, anchor) = rest_glyph(rest.duration);
+                upper = upper.min(level + offset - height * anchor);
+                lower = lower.max(level + offset + height * (1.0 - anchor));
+            }
+            if rest.tuplet.is_some() {
+                upper = upper.min(-2.4 + offset);
+            }
+            if rest.fermata {
+                upper = upper.min(
+                    offset
+                        + if rest.measures.is_some() {
+                            -4.2
+                        } else if rest.tuplet.is_some() {
+                            -3.2
+                        } else {
+                            -2.0
+                        },
+                );
+            }
         }
         for dynamic in score
             .dynamics
@@ -1230,7 +1349,9 @@ impl Preview {
                             let note_scale = note.notation_scale();
                             let level = relative(note.pitch);
                             let at = point(x, level);
-                            let color = if selected == Some(Selection::Note(index)) {
+                            let color = if selected == Some(Selection::Note(index))
+                                || self.additional_selection.contains(&Selection::Note(index))
+                            {
                                 Color32::from_rgb(0, 95, 180)
                             } else {
                                 Color32::BLACK
@@ -1277,7 +1398,7 @@ impl Preview {
                                 Vec2::splat(0.5),
                                 color,
                             );
-                            let down = level <= 2.0;
+                            let down = voices.stem_down(note.x, note.voice, level);
                             let stem_length = GAP
                                 * note_scale
                                 * (3.3 + note.duration.flag_count().saturating_sub(2) as f32 * 0.5);
@@ -1397,12 +1518,14 @@ impl Preview {
                                     );
                                 }
                             }
+                            let head_bounds = Rect::from_center_size(at, Vec2::splat(24.0 * scale));
+                            let hit_bounds = if note.duration == Duration::Whole {
+                                head_bounds
+                            } else {
+                                head_bounds.union(Rect::from_two_pos(at, tip).expand(5.0 * scale))
+                            };
                             if ui
-                                .interact(
-                                    Rect::from_center_size(at, Vec2::splat(24.0 * scale)),
-                                    ui.id().with(("note", index)),
-                                    Sense::click(),
-                                )
+                                .interact(hit_bounds, ui.id().with(("note", index)), Sense::click())
                                 .on_hover_text(format!(
                                     "{}  {}",
                                     note.pitch_label(),
@@ -1415,50 +1538,46 @@ impl Preview {
                         }
                         Item::Rest(index) => {
                             let rest = &score.rests[index];
-                            let color = if selected == Some(Selection::Rest(index)) {
+                            let offset = voices.rest_offset(rest.x, rest.voice);
+                            let rest_point = |x, level| point(x, level + offset);
+                            let color = if selected == Some(Selection::Rest(index))
+                                || self.additional_selection.contains(&Selection::Rest(index))
+                            {
                                 Color32::from_rgb(0, 95, 180)
                             } else {
                                 Color32::BLACK
                             };
                             if let Some(count) = rest.measures {
                                 ui.painter().line_segment(
-                                    [point(x - 30.0, 2.0), point(x + 30.0, 2.0)],
+                                    [rest_point(x - 30.0, 2.0), rest_point(x + 30.0, 2.0)],
                                     Stroke::new(5.0 * scale, color),
                                 );
                                 for edge in [-30.0, 30.0] {
                                     ui.painter().line_segment(
-                                        [point(x + edge, 1.0), point(x + edge, 3.0)],
+                                        [rest_point(x + edge, 1.0), rest_point(x + edge, 3.0)],
                                         Stroke::new(1.4 * scale, color),
                                     );
                                 }
                                 ui.painter().text(
-                                    point(x, -0.6),
+                                    rest_point(x, -0.6),
                                     egui::Align2::CENTER_BOTTOM,
                                     count.to_string(),
                                     egui::FontId::proportional(20.0 * scale),
                                     color,
                                 );
                             } else {
-                                let (character, height, level, anchor) = match rest.duration {
-                                    Duration::Whole => ('\u{e4e3}', 0.5, 1.0, 0.0),
-                                    Duration::Half => ('\u{e4e4}', 0.5, 2.0, 1.0),
-                                    Duration::Quarter => ('\u{e4e5}', 2.8, 2.0, 0.5),
-                                    Duration::Eighth => ('\u{e4e6}', 1.8, 2.0, 0.5),
-                                    Duration::Sixteenth => ('\u{e4e7}', 2.8, 2.0, 0.5),
-                                    Duration::ThirtySecond => ('\u{e4e8}', 3.8, 2.0, 0.5),
-                                    Duration::SixtyFourth => ('\u{e4e9}', 4.8, 2.0, 0.5),
-                                };
+                                let (character, height, level, anchor) = rest_glyph(rest.duration);
                                 let size = self.glyph(
                                     ui,
                                     character,
-                                    point(x, level),
+                                    rest_point(x, level),
                                     GAP * height,
                                     Vec2::new(0.5, anchor),
                                     color,
                                 );
                                 for dot in 0..rest.dots.min(2) {
                                     ui.painter().circle_filled(
-                                        point(
+                                        rest_point(
                                             x + size.x / (2.0 * scale) + 6.0 + f32::from(dot) * 6.0,
                                             1.5,
                                         ),
@@ -1467,11 +1586,29 @@ impl Preview {
                                     );
                                 }
                             }
+                            if let Some(ratio) = rest.tuplet {
+                                ui.painter().text(
+                                    rest_point(x, -1.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    ratio.actual.to_string(),
+                                    egui::FontId::proportional(12.0 * scale),
+                                    color,
+                                );
+                            }
                             if rest.fermata {
                                 self.glyph(
                                     ui,
                                     '\u{e4c0}',
-                                    point(x, if rest.measures.is_some() { -3.0 } else { -0.8 }),
+                                    rest_point(
+                                        x,
+                                        if rest.measures.is_some() {
+                                            -3.0
+                                        } else if rest.tuplet.is_some() {
+                                            -2.0
+                                        } else {
+                                            -0.8
+                                        },
+                                    ),
                                     GAP * 1.2,
                                     Vec2::new(0.5, 1.0),
                                     color,
@@ -1480,15 +1617,21 @@ impl Preview {
                             if ui
                                 .interact(
                                     Rect::from_center_size(
-                                        point(x, 2.0),
-                                        Vec2::new(item.width(score), GAP * 3.0) * scale,
+                                        rest_point(x, 2.0),
+                                        Vec2::new(
+                                            item.width(score),
+                                            GAP * rest_glyph(rest.duration).1.max(3.0),
+                                        ) * scale,
                                     ),
                                     ui.id().with(("rest", index)),
                                     Sense::click(),
                                 )
                                 .on_hover_text(i18n::format(
-                                    "Rest {0}",
-                                    &[("0", rest.duration_label().to_string())],
+                                    "Rest {value}, voice {voice}",
+                                    &[
+                                        ("value", rest.duration_label()),
+                                        ("voice", rest.voice.to_string()),
+                                    ],
                                 ))
                                 .clicked()
                             {
@@ -2519,6 +2662,242 @@ mod tests {
                     assert_eq!(clicked, Some(Selection::KeyChange(0)));
                 }
             }
+        }
+    }
+
+    fn voice_score(y: f32, duration: Duration) -> Score {
+        let mut score = Score {
+            staves: vec![Staff {
+                lines: [60.0, 72.0, 84.0, 96.0, 108.0],
+                left: 20.0,
+                right: 400.0,
+                header: StaffHeader::default(),
+            }],
+            ..Default::default()
+        };
+        for voice in [1, 2] {
+            score.add_note(100.0, y);
+            let note = score.notes.last_mut().unwrap();
+            note.voice = voice;
+            note.duration = Duration::Eighth;
+            score.add_rest(200.0, 84.0, duration);
+            let rest = score.rests.last_mut().unwrap();
+            rest.voice = voice;
+            rest.dots = 2;
+        }
+        score
+    }
+
+    fn staff_middle(output: &egui::FullOutput) -> f32 {
+        let lines: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, .. }
+                    if points[0].y == points[1].y && (points[1].x - points[0].x).abs() > 80.0 =>
+                {
+                    Some(points[0].y)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines.len(), 5);
+        lines[2]
+    }
+
+    fn stems(output: &egui::FullOutput, scale: f32) -> Vec<[Pos2; 2]> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, .. }
+                    if points[0].x == points[1].x
+                        && (points[1].y - points[0].y).abs() > 20.0 * scale =>
+                {
+                    Some(*points)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parallel_voices_render_opposite_stems_and_separate_clickable_rests() {
+        for size in [Vec2::new(760.0, 520.0), Vec2::new(1280.0, 820.0)] {
+            for density in [1.0, 2.0] {
+                for y in [72.0, 96.0] {
+                    for duration in Duration::ALL {
+                        let score = voice_score(y, duration);
+                        let before = serde_json::to_value(&score).unwrap();
+                        let context = egui::Context::default();
+                        context.set_pixels_per_point(density);
+                        let mut preview = Preview::fitted();
+                        let render = |preview: &mut Preview, events| {
+                            let mut clicked = None;
+                            let output = context.run(
+                                egui::RawInput {
+                                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                                    events,
+                                    ..Default::default()
+                                },
+                                |context| {
+                                    egui::CentralPanel::default().show(context, |ui| {
+                                        clicked = preview.show(ui, &score, 0, None);
+                                    });
+                                },
+                            );
+                            (output, clicked)
+                        };
+                        let mut output = render(&mut preview, vec![]).0;
+                        for _ in 0..2 {
+                            output = render(&mut preview, vec![]).0;
+                        }
+                        let stems = stems(&output, preview.scale);
+                        assert_eq!(stems.len(), 2);
+                        assert!(stems[0][1].y < stems[0][0].y, "voice 1 points up");
+                        assert!(stems[1][1].y > stems[1][0].y, "voice 2 points down");
+                        for (index, stem) in stems.iter().enumerate() {
+                            let target = stem[0].lerp(stem[1], 0.75);
+                            let mut clicked = None;
+                            for pressed in [true, false] {
+                                clicked = render(
+                                    &mut preview,
+                                    vec![
+                                        egui::Event::PointerMoved(target),
+                                        egui::Event::PointerButton {
+                                            pos: target,
+                                            button: egui::PointerButton::Primary,
+                                            pressed,
+                                            modifiers: egui::Modifiers::NONE,
+                                        },
+                                    ],
+                                )
+                                .1
+                                .or(clicked);
+                            }
+                            assert_eq!(
+                                clicked,
+                                Some(Selection::Note(index)),
+                                "select voice {} by its stem",
+                                index + 1
+                            );
+                        }
+                        for flag in ['\u{e240}', '\u{e241}'] {
+                            assert!(
+                                preview
+                                    .glyphs
+                                    .keys()
+                                    .any(|(character, _)| *character == flag)
+                            );
+                        }
+                        let character = rest_glyph(duration).0;
+                        let mut rests: Vec<_> = output
+                            .shapes
+                            .iter()
+                            .filter_map(|shape| match &shape.shape {
+                                egui::Shape::Mesh(mesh)
+                                    if preview.glyphs.iter().any(|((glyph, _), data)| {
+                                        *glyph == character && mesh.texture_id == data.texture.id()
+                                    }) =>
+                                {
+                                    Some(mesh.calc_bounds())
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        rests.sort_by(|a, b| a.center().y.total_cmp(&b.center().y));
+                        assert_eq!(rests.len(), 2);
+                        let middle = staff_middle(&output);
+                        assert!(rests[0].center().y < middle && rests[1].center().y > middle);
+                        assert!((rests[0].center().x - rests[1].center().x).abs() < 1.0);
+                        for shape in &output.shapes {
+                            if !matches!(shape.shape, egui::Shape::Rect(_) | egui::Shape::Noop) {
+                                assert!(
+                                    shape
+                                        .clip_rect
+                                        .contains_rect(shape.shape.visual_bounding_rect()),
+                                    "clipped {duration:?} at {density}"
+                                );
+                            }
+                        }
+                        let target = rests[1].center();
+                        let mut clicked = None;
+                        for pressed in [true, false] {
+                            clicked = render(
+                                &mut preview,
+                                vec![
+                                    egui::Event::PointerMoved(target),
+                                    egui::Event::PointerButton {
+                                        pos: target,
+                                        button: egui::PointerButton::Primary,
+                                        pressed,
+                                        modifiers: egui::Modifiers::NONE,
+                                    },
+                                ],
+                            )
+                            .1
+                            .or(clicked);
+                        }
+                        assert_eq!(
+                            clicked,
+                            Some(Selection::Rest(1)),
+                            "lower rest at {duration:?}"
+                        );
+                        assert_eq!(serde_json::to_value(&score).unwrap(), before);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn voice_direction_is_local_to_the_measure_and_retained_in_object_preview() {
+        let mut score = voice_score(72.0, Duration::Quarter);
+        score.barlines.push(Barline {
+            staff: 0,
+            x: 250.0,
+            kind: BarlineKind::Single,
+            confirmed: true,
+        });
+        score.add_note(300.0, 84.0);
+        let context = egui::Context::default();
+        let mut preview = Preview::default();
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(760.0, 520.0))),
+                ..Default::default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    preview.show(ui, &score, 0, None);
+                });
+            },
+        );
+        let stems: Vec<_> = stems(&output, preview.scale)
+            .into_iter()
+            .filter(|stem| {
+                (stem[1].y - stem[0].y).abs() > 4.1 * GAP * preview.scale
+                    || (stem[1].y - stem[0].y).abs() < 3.9 * GAP * preview.scale
+            })
+            .collect();
+        assert_eq!(stems.len(), 3);
+        assert!(stems[0][1].y < stems[0][0].y);
+        assert!(stems[1][1].y > stems[1][0].y);
+        assert!(
+            stems[2][1].y > stems[2][0].y,
+            "single-voice measure uses ordinary stem direction"
+        );
+        for (index, down) in [(0, false), (1, true)] {
+            let output = object_output(
+                &context,
+                &mut preview,
+                &score,
+                Selection::Note(index),
+                Vec2::new(360.0, 300.0),
+            );
+            let stems = self::stems(&output, preview.scale);
+            assert_eq!(stems.len(), 1);
+            assert_eq!(stems[0][1].y > stems[0][0].y, down);
         }
     }
 

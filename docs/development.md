@@ -95,7 +95,7 @@ dense beams, chords, damaged/open hollow shapes, text and other symbols.
 Separate heads sharing a stem are detected, but full chord/voice assignment is
 not reconstructed. The preview displays the model rather than validated
 engraving. Spacing is adjusted for readability; eighth through sixty-fourth
-notes use flags instead of reconstructed beam groups. Full voice assignment,
+notes use flags instead of reconstructed beam groups. Automatic voice assignment,
 rhythmic completeness and engraving/line-breaking logic remain incomplete.
 
 Staff detection expects lines spanning at least about 45% of image width.
@@ -423,3 +423,41 @@ flats and one flat:
 LIBREOMR_KULTTOUR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \
 cargo test --release --locked --no-default-features external_kulttour_headers_on_all_pages -- --ignored
 ```
+
+## Multiple selection and rhythmic voices
+
+Notes and rests store a positive `voice` number (1 to 255); legacy projects
+load into voice 1. Rests also support an optional `tuplet` ratio with the same
+exact time resolution as notes. Each present voice is summed and checked from
+the measure boundary; preceding rests for later entries must be explicit.
+Chords group only within a voice. A whole rest alone in a voice follows the
+meter even alongside cue notes in another voice. Recognition initially assigns
+all notes and rests to voice 1.
+
+MusicXML writes voice numbers on every note/rest and uses `backup` between
+voices. Warnings identify the inconsistent voice; tuplet rests receive
+`time-modification`. Notehead size remains independent of voice and grace status.
+
+`src/app/selection.rs` handles range/toggle selection and shared edits.
+Ctrl/Cmd-click toggles objects; Shift-click selects a range in printed order.
+Selection persists per page and resets on undo/redo, deletion or closing details.
+Each shared edit creates one undo step; mixed or unchanged properties remain
+untouched. Multimeasure rests participate only in voice, review and deletion edits.
+New editor labels, voice tooltips and rhythmic diagnostics use the English/German
+catalogs so changing language preserves the selection and score data.
+
+Regressions cover parallel voices, chords, measure rests, short/long voices,
+note/rest triplets and septuplets, legacy projects, multipage export, selection,
+mixed properties and atomic undo/redo. Optional MusicXML schema validation also
+covers these export cases:
+
+```sh
+LIBREOMR_MUSICXML_SCHEMA=/path/to/musicxml.xsd cargo test --profile ci --locked musicxml
+cargo test --profile ci --locked app::selection
+```
+
+In polyphonic measures, odd voices have upward stems and even voices downward
+stems; rests are offset accordingly. Single-voice measures retain pitch-based
+stem direction, including in the isolated object preview. Spacing, flags, rest
+dots and hit areas follow the displayed geometry. Stems sharing a notehead can
+be selected independently. Scan labels do not add voice numbers.

@@ -1,4 +1,5 @@
 mod problems;
+mod selection;
 
 use std::{
     collections::VecDeque,
@@ -243,6 +244,8 @@ struct PageState {
     selected: Option<usize>,
     selected_rest: Option<usize>,
     selected_object: Option<Object>,
+    selection: Vec<Object>,
+    selection_anchor: Option<Object>,
     object_drag: Option<ObjectDrag>,
     canvas_context: Option<(Vec2, Option<Object>)>,
     selected_staff: usize,
@@ -924,6 +927,11 @@ impl App {
     }
 
     fn select_object(&mut self, object: Option<Object>) {
+        self.page.selection = object
+            .filter(|object| matches!(object, Object::Note(_) | Object::Rest(_)))
+            .into_iter()
+            .collect();
+        self.page.selection_anchor = object;
         self.page.reveal_x = None;
         self.page.selected = None;
         self.page.selected_rest = None;
@@ -1849,6 +1857,8 @@ impl App {
             self.page.selected = None;
             self.page.selected_rest = None;
             self.page.selected_object = None;
+            self.page.selection.clear();
+            self.page.selection_anchor = None;
             self.page.object_drag = None;
             self.dirty = true;
             self.problems.invalidate();
@@ -1864,6 +1874,8 @@ impl App {
             self.page.selected = None;
             self.page.selected_rest = None;
             self.page.selected_object = None;
+            self.page.selection.clear();
+            self.page.selection_anchor = None;
             self.page.object_drag = None;
             self.dirty = true;
             self.problems.invalidate();
@@ -2280,6 +2292,16 @@ impl App {
     }
 
     fn apply_edit_shortcut(&mut self, command: EditShortcut) {
+        if self.page.selection.len() > 1 {
+            let edit = match command {
+                EditShortcut::Duration(value) => selection::BatchEdit::Duration(value),
+                EditShortcut::Dots(value) => selection::BatchEdit::Dots(value),
+                EditShortcut::Accidental(value) => selection::BatchEdit::Accidental(value),
+                EditShortcut::Delete => selection::BatchEdit::Delete,
+            };
+            self.apply_batch_edit(edit);
+            return;
+        }
         let Some(object) = self.page.selected_object else {
             return;
         };
@@ -2341,6 +2363,7 @@ impl App {
         ui.menu_button("?", |ui| {
             ui.strong(i18n::tr("Keyboard shortcuts"));
             ui.label(i18n::tr("First select an object in the scan or preview."));
+            ui.label(i18n::tr("Ctrl/Cmd-click: toggle notes/rests. Shift-click: select a range. Edits apply to the entire selection."));
             ui.separator();
             egui::Grid::new("edit_shortcut_help").show(ui, |ui| {
                 for (duration, key) in DURATION_SHORTCUTS {
@@ -2655,6 +2678,16 @@ impl App {
                             ));
                     });
                 });
+                self.page.preview.additional_selection = self
+                    .page
+                    .selection
+                    .iter()
+                    .filter_map(|object| match *object {
+                        Object::Note(i) => Some(crate::preview::Selection::Note(i)),
+                        Object::Rest(i) => Some(crate::preview::Selection::Rest(i)),
+                        _ => None,
+                    })
+                    .collect();
                 let selected = self
                     .page
                     .selected
@@ -2686,32 +2719,17 @@ impl App {
                     selected,
                     inherited_meter,
                 ) {
-                    match selection {
-                        crate::preview::Selection::Note(index) => {
-                            self.select_object(Some(Object::Note(index)));
-                        }
-                        crate::preview::Selection::Rest(index) => {
-                            self.select_object(Some(Object::Rest(index)));
-                        }
-                        crate::preview::Selection::KeyChange(index) => {
-                            self.select_object(Some(Object::KeyChange(index)))
-                        }
-                        crate::preview::Selection::TimeChange(index) => {
-                            self.select_object(Some(Object::TimeChange(index)))
-                        }
-                        crate::preview::Selection::Dynamic(index) => {
-                            self.select_object(Some(Object::Dynamic(index)))
-                        }
-                        crate::preview::Selection::RepeatMark(index) => {
-                            self.select_object(Some(Object::RepeatMark(index)))
-                        }
-                        crate::preview::Selection::Barline(index) => {
-                            self.select_object(Some(Object::Barline(index)))
-                        }
-                        crate::preview::Selection::Span(index) => {
-                            self.select_object(Some(Object::Span(index)))
-                        }
-                    }
+                    let object = match selection {
+                        crate::preview::Selection::Note(i) => Object::Note(i),
+                        crate::preview::Selection::Rest(i) => Object::Rest(i),
+                        crate::preview::Selection::KeyChange(i) => Object::KeyChange(i),
+                        crate::preview::Selection::TimeChange(i) => Object::TimeChange(i),
+                        crate::preview::Selection::Dynamic(i) => Object::Dynamic(i),
+                        crate::preview::Selection::RepeatMark(i) => Object::RepeatMark(i),
+                        crate::preview::Selection::Barline(i) => Object::Barline(i),
+                        crate::preview::Selection::Span(i) => Object::Span(i),
+                    };
+                    self.select_with_modifiers(Some(object), ui.input(|input| input.modifiers));
                 }
                 if let Some(edit) = self.page.preview.take_anchor_edit() {
                     self.apply_preview_anchor_edit(edit);
@@ -3274,10 +3292,11 @@ impl App {
                     icons::MUSIC_NOTE,
                     format!("{}   {}", note.pitch_label(), note.duration_label()),
                     i18n::format(
-                        "Note {0} - {1}",
+                        "Note {pitch} - {duration}, voice {voice}",
                         &[
-                            ("0", note.pitch_label().to_string()),
-                            ("1", note.duration_label().to_string()),
+                            ("pitch", note.pitch_label()),
+                            ("duration", note.duration_label()),
+                            ("voice", note.voice.to_string()),
                         ],
                     ),
                 )
@@ -3287,7 +3306,13 @@ impl App {
                 (
                     icons::PAUSE,
                     value.clone(),
-                    i18n::format("Rest {value}", &[("value", value.to_string())]),
+                    i18n::format(
+                        "Rest {value}, voice {voice}",
+                        &[
+                            ("value", value.to_string()),
+                            ("voice", self.page.score.rests[index].voice.to_string()),
+                        ],
+                    ),
                 )
             }
             Object::Barline(index) => {
@@ -3332,7 +3357,8 @@ impl App {
             }
         };
         let confirmed = self.is_confirmed(object);
-        let selected = self.page.selected_object == Some(object);
+        let selected =
+            self.page.selected_object == Some(object) || self.page.selection.contains(&object);
         let palette = crate::theme::palette(ui.visuals().dark_mode);
         ui.push_id(("object", object), |ui| {
             ui.horizontal(|ui| {
@@ -3351,7 +3377,11 @@ impl App {
                     button = button.fill(palette.confirmed_bg);
                 }
                 if ui.add(button).on_hover_text(tooltip).clicked() {
-                    self.select_object(Some(object));
+                    let modifiers = ui.input(|input| input.modifiers);
+                    self.select_with_modifiers(Some(object), modifiers);
+                    if modifiers.shift || modifiers.command || modifiers.ctrl {
+                        self.page.show_object_list = true;
+                    }
                     self.page.reveal_selection = true;
                 }
                 let (rect, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
@@ -3602,6 +3632,10 @@ impl App {
                                 self.object_list(ui);
                                 return;
                             }
+                            if self.page.selection.len() > 1 {
+                                self.selection_editor(ui);
+                                return;
+                            }
                             if !self.page.score.staves.is_empty() {
                                 self.page.selected_staff =
                                     self.page.selected_staff.min(self.page.score.staves.len() - 1);
@@ -3828,7 +3862,7 @@ impl App {
                             {
                                 let mut note = self.page.score.notes[index].clone();
                                 ui.heading(note.pitch_label());
-                                let mut changed = false;
+                                let mut changed = Self::voice_editor(ui, &mut note.voice);
                                 ui.horizontal(|ui| {
                                     let names = ["C", "D", "E", "F", "G", "A", "B / H"];
                                     let mut degree = note.pitch.rem_euclid(7);
@@ -3975,7 +4009,14 @@ impl App {
                                 .filter(|&index| index < self.page.score.rests.len())
                             {
                                 let mut rest = self.page.score.rests[index].clone();
-                                ui.heading(i18n::tr("Rest"));
+                                let remove = ui
+                                    .horizontal(|ui| {
+                                        ui.heading(i18n::tr("Rest"));
+                                        ui.button("\u{00d7}")
+                                            .on_hover_text(i18n::tr("Delete rest (Delete / Backspace)"))
+                                            .clicked()
+                                    })
+                                    .inner;
                                 let mut changed = false;
                                 let mut multiple = rest.measures.is_some();
                                 if ui.checkbox(&mut multiple, i18n::tr("Multimeasure rest")).changed() {
@@ -3983,6 +4024,7 @@ impl App {
                                     if multiple {
                                         rest.duration = Duration::Whole;
                                         rest.dots = 0;
+                                        rest.tuplet = None;
                                     }
                                     changed = true;
                                 }
@@ -4011,15 +4053,18 @@ impl App {
                                 }
                                 changed |= ui.checkbox(&mut rest.fermata, i18n::tr("Fermata")).changed();
                                 changed |= ui.checkbox(&mut rest.confirmed, i18n::tr("Reviewed")).changed();
+                                changed |= Self::voice_editor(ui, &mut rest.voice);
+                                if rest.measures.is_none()
+                                    && let Some(ratio) = Self::rest_tuplet_editor(ui, Some(rest.tuplet))
+                                {
+                                    rest.tuplet = ratio;
+                                    changed = true;
+                                }
                                 if changed {
                                     self.snapshot();
                                     self.page.score.rests[index] = rest;
                                 }
-                                if ui
-                                    .button("\u{00d7}")
-                                    .on_hover_text(i18n::tr("Delete rest (Delete / Backspace)"))
-                                    .clicked()
-                                {
+                                if remove {
                                     self.snapshot();
                                     self.page.score.rests.remove(index);
                                     self.select_object(None);
@@ -4481,9 +4526,9 @@ impl App {
                                         .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
                                         .on_hover_text(
                                             if right {
-                                                "Endanker ziehen"
+                                                i18n::tr("Drag end anchor")
                                             } else {
-                                                "Anfangsanker ziehen"
+                                                i18n::tr("Drag start anchor")
                                             },
                                         );
                                     }
@@ -4604,7 +4649,9 @@ impl App {
                             }
                         }
                         for (index, rest) in self.page.score.rests.iter().enumerate() {
-                            let color = if self.page.selected_rest == Some(index) {
+                            let color = if self.page.selected_rest == Some(index)
+                                || self.page.selection.contains(&Object::Rest(index))
+                            {
                                 Color32::from_rgb(0, 95, 180)
                             } else if rest.confirmed {
                                 Color32::from_rgb(0, 135, 85)
@@ -4647,7 +4694,9 @@ impl App {
                             );
                         }
                         for (index, note) in self.page.score.notes.iter().enumerate() {
-                            let color = if self.page.selected == Some(index) {
+                            let color = if self.page.selected == Some(index)
+                                || self.page.selection.contains(&Object::Note(index))
+                            {
                                 Color32::from_rgb(0, 95, 180)
                             } else if note.confirmed {
                                 Color32::from_rgb(0, 135, 85)
@@ -4673,7 +4722,9 @@ impl App {
                                     .max(6.0),
                                 Stroke::new(2.0_f32, color),
                             );
-                            if self.page.selected == Some(index) {
+                            if self.page.selected == Some(index)
+                                || self.page.selection.contains(&Object::Note(index))
+                            {
                                 ui.painter().text(
                                     center + Vec2::new(0.0, -20.0),
                                     egui::Align2::CENTER_BOTTOM,
@@ -4712,7 +4763,10 @@ impl App {
                             let position = (pointer - rect.min) / self.page.zoom;
                             if response.clicked() {
                                 let target = self.hit_object(position);
-                                self.select_object(target.map(DragTarget::object));
+                                self.select_with_modifiers(
+                                    target.map(DragTarget::object),
+                                    context.input(|input| input.modifiers),
+                                );
                                 if target.is_none()
                                     && let Some((index, _)) =
                                         self.page.score.staves.iter().enumerate().min_by(
@@ -4726,7 +4780,13 @@ impl App {
                                     self.page.selected_staff = index;
                                 }
                             }
-                            if response.drag_started() {
+                            if response.drag_started()
+                                && !context.input(|input| {
+                                    input.modifiers.shift
+                                        || input.modifiers.command
+                                        || input.modifiers.ctrl
+                                })
+                            {
                                 let origin = context
                                     .input(|input| input.pointer.press_origin())
                                     .map_or(position, |origin| {
@@ -6813,6 +6873,8 @@ mod tests {
                 selected: None,
                 selected_rest: None,
                 selected_object: None,
+                selection: vec![],
+                selection_anchor: None,
                 object_drag: None,
                 canvas_context: None,
                 selected_staff: 0,

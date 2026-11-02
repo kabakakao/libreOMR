@@ -142,16 +142,20 @@ fn span_marks(score: &Score, warnings: &mut Warnings) -> Vec<Vec<Mark>> {
         let first = &score.notes[start];
         let last = &score.notes[end];
         if span.kind == SpanKind::Tie
-            && ((first.pitch, first.accidental) != (last.pitch, last.accidental)
+            && (first.voice != last.voice
+                || (first.pitch, first.accidental) != (last.pitch, last.accidental)
                 || score.notes.iter().any(|note| {
                     note.staff == span.staff
+                        && note.voice == first.voice
                         && note.x > first.x + gap * 0.35
                         && note.x < last.x - gap * 0.35
                 })
-                || score
-                    .rests
-                    .iter()
-                    .any(|rest| rest.staff == span.staff && rest.x > first.x && rest.x < last.x))
+                || score.rests.iter().any(|rest| {
+                    rest.staff == span.staff
+                        && rest.voice == first.voice
+                        && rest.x > first.x
+                        && rest.x < last.x
+                }))
         {
             warnings.report(Issue::warning(
                 span.staff, Some(Object::Span(span_index)), Some(span.start[0]),
@@ -427,6 +431,7 @@ fn write_note(xml: &mut Xml, note: &Note, chord: bool, marks: &[Mark], divisions
             xml.empty("tie", &[("type", phase)]);
         }
     }
+    xml.text("voice", note.voice);
     xml.start("type", if note.small { &[("size", "cue")] } else { &[] });
     xml.content(value(note.duration).1);
     xml.end("type");
@@ -1131,200 +1136,258 @@ fn export_ordered(
                         write_bar(&mut xml, BarlineKind::Single, true, &left_endings);
                     }
                 }
+                let mut voices: Vec<_> = segment
+                    .iter()
+                    .filter_map(|(_, item)| match *item {
+                        Item::Note(i) => Some(score.notes[i].voice),
+                        Item::Rest(i) => Some(score.rests[i].voice),
+                        _ => None,
+                    })
+                    .collect();
+                voices.sort_unstable();
+                voices.dedup();
+                if voices.is_empty() {
+                    voices.push(1);
+                }
+                let first_voice = voices[0];
                 let mut elapsed = 0;
-                let mut onsets = vec![];
-                let mut previous_note: Option<&Note> = None;
-                for (position, item) in segment {
-                    match *item {
-                        Item::RepeatMark(index) => {
-                            if repetition == 0 {
-                                let mark = &score.repeat_marks[index];
-                                xml.start("direction", &[("placement", "above")]);
-                                // MuseScore carries words formatting into the following symbol,
-                                // but ignores font-size on segno/coda themselves.
-                                xml.start("direction-type", &[]);
-                                xml.empty("words", &[("font-size", "24")]);
-                                xml.end("direction-type");
-                                xml.start("direction-type", &[]);
-                                xml.empty(
-                                    if mark.kind == RepeatMarkKind::Segno {
-                                        "segno"
-                                    } else {
-                                        "coda"
-                                    },
-                                    &[("font-size", "24")],
-                                );
-                                xml.end("direction-type");
-                                xml.end("direction");
+                let mut longest = 0;
+                for &voice in &voices {
+                    if elapsed > 0 {
+                        xml.start("backup", &[]);
+                        xml.text("duration", elapsed);
+                        xml.end("backup");
+                    }
+                    elapsed = 0;
+                    let mut onsets = vec![];
+                    let mut previous_note: Option<&Note> = None;
+                    for (position, item) in segment {
+                        let belongs = match *item {
+                            Item::Note(i) => score.notes[i].voice == voice,
+                            Item::Rest(i) => score.rests[i].voice == voice,
+                            _ => voice == first_voice,
+                        };
+                        if !belongs {
+                            if matches!(item, Item::Time(_)) {
+                                previous_note = None;
                             }
+                            continue;
                         }
-                        Item::Dynamic(index) => {
-                            if repetition == 0 {
-                                let dynamic = &score.dynamics[index];
-                                xml.start(
-                                    "direction",
-                                    &[(
-                                        "placement",
-                                        if dynamic.y < staff.lines[2] {
-                                            "above"
+                        match *item {
+                            Item::RepeatMark(index) => {
+                                if repetition == 0 {
+                                    let mark = &score.repeat_marks[index];
+                                    xml.start("direction", &[("placement", "above")]);
+                                    // MuseScore carries words formatting into the following symbol,
+                                    // but ignores font-size on segno/coda themselves.
+                                    xml.start("direction-type", &[]);
+                                    xml.empty("words", &[("font-size", "24")]);
+                                    xml.end("direction-type");
+                                    xml.start("direction-type", &[]);
+                                    xml.empty(
+                                        if mark.kind == RepeatMarkKind::Segno {
+                                            "segno"
                                         } else {
-                                            "below"
+                                            "coda"
                                         },
-                                    )],
-                                );
-                                xml.start("direction-type", &[]);
-                                xml.start("dynamics", &[]);
-                                if matches!(dynamic.kind.label(), "sfzp") {
-                                    xml.text("other-dynamics", dynamic.kind.label());
-                                } else {
-                                    xml.empty(dynamic.kind.label(), &[]);
+                                        &[("font-size", "24")],
+                                    );
+                                    xml.end("direction-type");
+                                    xml.end("direction");
                                 }
-                                xml.end("dynamics");
-                                xml.end("direction-type");
-                                xml.end("direction");
                             }
-                        }
-                        Item::Time(index) => {
-                            if repetition == 0 {
-                                meter = score.time_changes[index].time_signature;
-                                let (beats, beat_unit) = meter_value(meter);
-                                measure_duration =
-                                    divisions * 4 * u128::from(beats) / u128::from(beat_unit);
-                                xml.start("attributes", &[]);
-                                write_time(&mut xml, meter);
-                                xml.end("attributes");
+                            Item::Dynamic(index) => {
+                                if repetition == 0 {
+                                    let dynamic = &score.dynamics[index];
+                                    xml.start(
+                                        "direction",
+                                        &[(
+                                            "placement",
+                                            if dynamic.y < staff.lines[2] {
+                                                "above"
+                                            } else {
+                                                "below"
+                                            },
+                                        )],
+                                    );
+                                    xml.start("direction-type", &[]);
+                                    xml.start("dynamics", &[]);
+                                    if matches!(dynamic.kind.label(), "sfzp") {
+                                        xml.text("other-dynamics", dynamic.kind.label());
+                                    } else {
+                                        xml.empty(dynamic.kind.label(), &[]);
+                                    }
+                                    xml.end("dynamics");
+                                    xml.end("direction-type");
+                                    xml.end("direction");
+                                }
+                            }
+                            Item::Time(index) => {
+                                if repetition == 0 {
+                                    meter = score.time_changes[index].time_signature;
+                                    let (beats, beat_unit) = meter_value(meter);
+                                    measure_duration =
+                                        divisions * 4 * u128::from(beats) / u128::from(beat_unit);
+                                    xml.start("attributes", &[]);
+                                    write_time(&mut xml, meter);
+                                    xml.end("attributes");
+                                    previous_note = None;
+                                }
+                            }
+                            Item::Key(index) => {
+                                if repetition == 0 {
+                                    xml.start("attributes", &[]);
+                                    write_key(
+                                        &mut xml,
+                                        score.key_changes[index].key_signature.fifths,
+                                    );
+                                    xml.end("attributes");
+                                }
+                            }
+                            Item::Note(index) => {
+                                let note = &score.notes[index];
+                                let chord = previous_note.is_some_and(|previous| {
+                                    note.grace == previous.grace
+                                        && (*position - previous.x).abs() <= staff.spacing() * 0.35
+                                        && note_duration(previous, divisions)
+                                            == note_duration(note, divisions)
+                                });
+                                if !chord && !note.grace {
+                                    onsets.push((*position, elapsed));
+                                }
+                                write_note(&mut xml, note, chord, &marks[index], divisions);
+                                if !chord {
+                                    elapsed += note_duration(note, divisions);
+                                    if !note.grace {
+                                        previous_note = Some(note);
+                                    }
+                                }
+                            }
+                            Item::Rest(index) => {
+                                let rest = &score.rests[index];
+                                let full_measure = rest.measures.is_some()
+                                    || (rest.duration == Duration::Whole
+                                        && rest.dots == 0
+                                        && rest.tuplet.is_none()
+                                        && segment
+                                            .iter()
+                                            .filter(|(_, item)| match *item {
+                                                Item::Note(i) => {
+                                                    score.notes[i].voice == voice
+                                                        && !score.notes[i].grace
+                                                }
+                                                Item::Rest(i) => score.rests[i].voice == voice,
+                                                _ => false,
+                                            })
+                                            .count()
+                                            == 1);
+                                let duration = if full_measure {
+                                    measure_duration
+                                } else {
+                                    rest.ticks(divisions)
+                                };
+                                onsets.push((*position, elapsed));
+                                xml.start("note", &[]);
+                                xml.empty(
+                                    "rest",
+                                    if full_measure {
+                                        &[("measure", "yes")]
+                                    } else {
+                                        &[]
+                                    },
+                                );
+                                xml.text("duration", duration);
+                                xml.text("voice", rest.voice);
+                                if !full_measure {
+                                    xml.text("type", value(rest.duration).1);
+                                    for _ in 0..rest.dots {
+                                        xml.empty("dot", &[]);
+                                    }
+                                }
+                                if let Some(ratio) = rest.tuplet {
+                                    xml.start("time-modification", &[]);
+                                    xml.text("actual-notes", ratio.actual);
+                                    xml.text("normal-notes", ratio.normal);
+                                    xml.end("time-modification");
+                                }
+                                if rest.fermata && repetition == 0 {
+                                    xml.start("notations", &[]);
+                                    xml.empty("fermata", &[]);
+                                    xml.end("notations");
+                                }
+                                xml.end("note");
+                                elapsed += duration;
                                 previous_note = None;
                             }
                         }
-                        Item::Key(index) => {
-                            if repetition == 0 {
-                                xml.start("attributes", &[]);
-                                write_key(&mut xml, score.key_changes[index].key_signature.fifths);
-                                xml.end("attributes");
-                            }
-                        }
-                        Item::Note(index) => {
-                            let note = &score.notes[index];
-                            let chord = previous_note.is_some_and(|previous| {
-                                note.grace == previous.grace
-                                    && (*position - previous.x).abs() <= staff.spacing() * 0.35
-                                    && note_duration(previous, divisions)
-                                        == note_duration(note, divisions)
-                            });
-                            if !chord && !note.grace {
-                                onsets.push((*position, elapsed));
-                            }
-                            write_note(&mut xml, note, chord, &marks[index], divisions);
-                            if !chord {
-                                elapsed += note_duration(note, divisions);
-                                if !note.grace {
-                                    previous_note = Some(note);
-                                }
-                            }
-                        }
-                        Item::Rest(index) => {
-                            let rest = &score.rests[index];
-                            let full_measure = rest.measures.is_some()
-                                || (rest.duration == Duration::Whole
-                                    && rest.dots == 0
-                                    && segment
-                                        .iter()
-                                        .filter(|(_, item)| {
-                                            !matches!(item, Item::Note(index) if score.notes[*index].grace) && !matches!(
-                                                item,
-                                                Item::Key(_)
-                                                    | Item::Time(_)
-                                                    | Item::Dynamic(_)
-                                                    | Item::RepeatMark(_)
-                                            )
-                                        })
-                                        .count()
-                                        == 1);
-                            let duration = if full_measure {
-                                measure_duration
-                            } else {
-                                rest.ticks(divisions)
-                            };
-                            onsets.push((*position, elapsed));
-                            xml.start("note", &[]);
-                            xml.empty(
-                                "rest",
-                                if full_measure {
-                                    &[("measure", "yes")]
-                                } else {
-                                    &[]
-                                },
-                            );
-                            xml.text("duration", duration);
-                            if !full_measure {
-                                xml.text("type", value(rest.duration).1);
-                                for _ in 0..rest.dots {
-                                    xml.empty("dot", &[]);
-                                }
-                            }
-                            if rest.fermata && repetition == 0 {
-                                xml.start("notations", &[]);
-                                xml.empty("fermata", &[]);
-                                xml.end("notations");
-                            }
-                            xml.end("note");
-                            elapsed += duration;
-                            previous_note = None;
-                        }
                     }
+                    for endpoint in wedges[segment_index]
+                        .iter()
+                        .filter(|_| voice == first_voice)
+                    {
+                        let time = if count > 1 {
+                            // A multi-measure rest represents the entire printed interval.
+                            let total = measure_duration * u128::from(count);
+                            let time = interpolate_time(
+                                endpoint.x,
+                                (measure_left, 0),
+                                (segment_right, total),
+                            );
+                            let target = (time / measure_duration).min(u128::from(count - 1));
+                            if target != u128::from(repetition) {
+                                continue;
+                            }
+                            time - u128::from(repetition) * measure_duration
+                        } else {
+                            wedge_time(endpoint.x, &onsets, segment_right, elapsed)
+                        };
+                        write_wedge(&mut xml, &endpoint.mark, time as i128 - elapsed as i128);
+                    }
+                    if elapsed != measure_duration {
+                        let mut issue = Issue::warning(
+                            staff_index,
+                            None,
+                            Some(measure_left),
+                            crate::i18n::format(
+                                "Measure {number}: voice {voice}, duration {actual} instead of {expected} ({status}); check note values/measure boundaries.",
+                                &[
+                                    ("number", number.to_string()),
+                                    ("voice", voice.to_string()),
+                                    (
+                                        "actual",
+                                        crate::rhythm::duration_fraction(elapsed, divisions),
+                                    ),
+                                    (
+                                        "expected",
+                                        crate::rhythm::duration_fraction(
+                                            measure_duration,
+                                            divisions,
+                                        ),
+                                    ),
+                                    (
+                                        "status",
+                                        crate::i18n::tr(if elapsed < measure_duration {
+                                            "too short"
+                                        } else {
+                                            "too long"
+                                        })
+                                        .into(),
+                                    ),
+                                ],
+                            ),
+                            crate::i18n::tr(
+                                "Check note values, rests, dots, tuplets, chords, voices and barlines. A pickup may be intentionally shorter.",
+                            ),
+                        );
+                        issue.measure = Some(number);
+                        warnings.report(issue);
+                    }
+                    longest = longest.max(elapsed);
                 }
-                for endpoint in &wedges[segment_index] {
-                    let time = if count > 1 {
-                        // A multi-measure rest represents the entire printed interval.
-                        let total = measure_duration * u128::from(count);
-                        let time =
-                            interpolate_time(endpoint.x, (measure_left, 0), (segment_right, total));
-                        let target = (time / measure_duration).min(u128::from(count - 1));
-                        if target != u128::from(repetition) {
-                            continue;
-                        }
-                        time - u128::from(repetition) * measure_duration
-                    } else {
-                        wedge_time(endpoint.x, &onsets, segment_right, elapsed)
-                    };
-                    write_wedge(&mut xml, &endpoint.mark, time as i128 - elapsed as i128);
-                }
-                if elapsed != measure_duration {
-                    let mut issue = Issue::warning(
-                        staff_index,
-                        None,
-                        Some(measure_left),
-                        crate::i18n::format(
-                            "Measure {number}: duration {0} instead of {1} ({2}); check note values/measure boundaries.",
-                            &[
-                                ("number", format!("{}", number)),
-                                (
-                                    "0",
-                                    crate::rhythm::duration_fraction(elapsed, divisions)
-                                        .to_string(),
-                                ),
-                                (
-                                    "1",
-                                    crate::rhythm::duration_fraction(measure_duration, divisions)
-                                        .to_string(),
-                                ),
-                                (
-                                    "2",
-                                    (if elapsed < measure_duration {
-                                        crate::i18n::tr("too short")
-                                    } else {
-                                        crate::i18n::tr("too long")
-                                    })
-                                    .to_string(),
-                                ),
-                            ],
-                        ),
-                        crate::i18n::tr(
-                            "Check note values, rests, dots, tuplets, chords and barlines. A pickup may be intentionally shorter.",
-                        ),
-                    );
-                    issue.measure = Some(number);
-                    warnings.report(issue);
+                if elapsed < longest {
+                    xml.start("forward", &[]);
+                    xml.text("duration", longest - elapsed);
+                    xml.end("forward");
                 }
                 if repetition + 1 == count
                     && let Some(bar) = boundary
@@ -1387,6 +1450,165 @@ fn export_ordered(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parallel_voices_export_with_backup_chords_and_measure_rests() {
+        let mut score = score();
+        score.notes.clear();
+        score.staves[0].header.time_signature = Some(TimeSignature::Meter {
+            beats: 3,
+            beat_unit: 4,
+        });
+        score.add_rest(50.0, 30.0, Duration::Whole);
+        for x in [50.0, 100.0, 150.0, 151.0] {
+            score.add_note(x, 40.0);
+            score.notes.last_mut().unwrap().voice = 2;
+            score.notes.last_mut().unwrap().small = true;
+        }
+        let before = serde_json::to_value(&score).unwrap();
+        let result = export(&score, "Stichnoten").unwrap();
+        assert_xml(&result.xml);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        assert!(
+            result
+                .xml
+                .contains("<rest measure=\"yes\"/><duration>576</duration><voice>1</voice>")
+        );
+        assert!(
+            result
+                .xml
+                .contains("<backup><duration>576</duration></backup>")
+        );
+        assert_eq!(result.xml.matches("<chord/>").count(), 1);
+        assert_eq!(result.xml.matches("<voice>2</voice>").count(), 4);
+        assert_eq!(
+            result
+                .xml
+                .matches("<type size=\"cue\">quarter</type>")
+                .count(),
+            4
+        );
+        assert_eq!(score.measure_validities(0)[0].is_valid(), Some(true));
+        let pages = export_pages(&[&score, &score], "Zwei Seiten").unwrap();
+        assert_xml(&pages.xml);
+        assert_eq!(pages.xml.matches("<backup>").count(), 2);
+        assert_eq!(pages.xml.matches("<voice>2</voice>").count(), 8);
+        assert_eq!(serde_json::to_value(&score).unwrap(), before);
+    }
+
+    #[test]
+    fn short_voices_keep_independent_cursors_and_warnings() {
+        let mut score = score();
+        score.notes.truncate(1);
+        score.notes[0].duration = Duration::Whole;
+        for (voice, duration) in [(2, Duration::Half), (4, Duration::Quarter)] {
+            score.add_note(50.0, 40.0);
+            let note = score.notes.last_mut().unwrap();
+            note.voice = voice;
+            note.duration = duration;
+        }
+        let result = export(&score, "Test").unwrap();
+        assert_xml(&result.xml);
+        assert!(
+            result
+                .xml
+                .contains("<backup><duration>768</duration></backup>")
+        );
+        assert!(
+            result
+                .xml
+                .contains("<backup><duration>384</duration></backup>")
+        );
+        assert!(
+            result
+                .xml
+                .contains("<forward><duration>576</duration></forward>")
+        );
+        assert!(!result.xml.contains("<chord/>"));
+        assert_eq!(result.warnings.len(), 2);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Stimme 2") && warning.contains("zu kurz"))
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Stimme 4") && warning.contains("zu kurz"))
+        );
+        assert_eq!(score.measure_validities(0)[0].is_valid(), Some(false));
+    }
+
+    #[test]
+    fn secondary_voice_chords_do_not_cross_attribute_boundaries() {
+        let mut score = score();
+        score.notes.clear();
+        score.add_rest(50.0, 30.0, Duration::Whole);
+        for x in [100.0, 102.0] {
+            score.add_note(x, 40.0);
+            score.notes.last_mut().unwrap().voice = 2;
+        }
+        score.time_changes.push(crate::model::TimeChange {
+            staff: 0,
+            x: 101.0,
+            time_signature: TimeSignature::Cut,
+            bounds: vec![],
+            confirmed: true,
+        });
+        let result = export(&score, "Test").unwrap();
+        assert_xml(&result.xml);
+        assert!(!result.xml.contains("<chord/>"));
+        assert_eq!(
+            score.measure_validities(0)[0].voice_ticks,
+            vec![(1, 768), (2, 384)]
+        );
+    }
+
+    #[test]
+    fn mixed_note_and_rest_tuplets_export_exactly_in_second_voice() {
+        use crate::model::Tuplet;
+        for (actual, normal) in [(3, 2), (7, 4)] {
+            let mut score = score();
+            score.notes.clear();
+            score.staves[0].header.time_signature = Some(TimeSignature::Meter {
+                beats: normal / 2,
+                beat_unit: 4,
+            });
+            score.add_rest(50.0, 30.0, Duration::Whole);
+            for i in 0..actual {
+                let x = 50.0 + f32::from(i) * 40.0;
+                if i % 2 == 0 {
+                    score.add_note(x, 40.0);
+                    let note = score.notes.last_mut().unwrap();
+                    note.voice = 2;
+                    note.duration = Duration::Eighth;
+                    note.tuplet = Some(Tuplet { actual, normal });
+                } else {
+                    score.add_rest(x, 30.0, Duration::Eighth);
+                    let rest = score.rests.last_mut().unwrap();
+                    rest.voice = 2;
+                    rest.tuplet = Some(Tuplet { actual, normal });
+                }
+            }
+            let result = export(&score, "Test").unwrap();
+            assert_xml(&result.xml);
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            assert_eq!(
+                result.xml.matches("<time-modification>").count(),
+                usize::from(actual)
+            );
+            let divisions = score.rhythm_divisions();
+            let total = divisions * u128::from(normal) / 2;
+            assert!(
+                result
+                    .xml
+                    .contains(&format!("<backup><duration>{total}</duration></backup>"))
+            );
+            assert_eq!(score.measure_validities(0)[0].is_valid(), Some(true));
+        }
+    }
+
     #[test]
     fn rest_fermatas_export_inside_the_rest_note() {
         for (duration, measures) in [
@@ -1817,6 +2039,8 @@ mod tests {
                 x: 100.0,
                 y: 40.0,
                 duration: Duration::Whole,
+                voice: 1,
+                tuplet: None,
                 dots: 0,
                 measures: Some(3),
                 fermata: false,
@@ -2423,7 +2647,7 @@ mod tests {
                 assert_xml(&result.xml);
                 assert!(
                     result.xml.contains(&format!(
-                        "<rest/><duration>{}</duration><type>{kind}</type>{}",
+                        "<rest/><duration>{}</duration><voice>1</voice><type>{kind}</type>{}",
                         ticks[usize::from(dots - 1)],
                         "<dot/>".repeat(usize::from(dots))
                     )),
@@ -2462,7 +2686,7 @@ mod tests {
                             .contains(&format!("<duration>{expected}</duration>"))
                     );
                     assert!(result.xml.contains(&format!(
-                        "<rest/><duration>{}</duration><type>{kind}</type>",
+                        "<rest/><duration>{}</duration><voice>1</voice><type>{kind}</type>",
                         ticks[0]
                     )));
                     assert_eq!(

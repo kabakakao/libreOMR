@@ -641,6 +641,7 @@ fn detect_notes(
                 .unwrap_or_else(|| staff.accidental_at(pitch)),
             accidental_explicit: accidental.is_some(),
             duration,
+            voice: 1,
             dots: detect_dots(binary, staff, x, y),
             triplet: false,
             tuplet: None,

@@ -206,8 +206,12 @@ fn render_pdf_page(pdf: &Pdf, index: usize) -> Result<GrayImage, String> {
         .iter()
         .map(|pixel| image::Rgb([pixel[0], pixel[1], pixel[2]]).to_luma()[0])
         .collect();
-    GrayImage::from_raw(u32::from(pixmap.width()), u32::from(pixmap.height()), pixels)
-        .ok_or_else(|| crate::i18n::tr("Could not rasterize PDF page.").into())
+    GrayImage::from_raw(
+        u32::from(pixmap.width()),
+        u32::from(pixmap.height()),
+        pixels,
+    )
+    .ok_or_else(|| crate::i18n::tr("Could not rasterize PDF page.").into())
 }
 
 #[cfg(test)]

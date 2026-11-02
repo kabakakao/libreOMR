@@ -159,6 +159,10 @@ pub struct Rest {
     pub y: f32,
     pub staff: usize,
     pub duration: Duration,
+    #[serde(default = "default_voice")]
+    pub voice: u8,
+    #[serde(default)]
+    pub tuplet: Option<Tuplet>,
     #[serde(default)]
     pub dots: u8,
     #[serde(default)]
@@ -171,17 +175,26 @@ pub struct Rest {
 
 impl Rest {
     pub(crate) fn ticks(&self, divisions: u128) -> u128 {
-        u128::from(self.duration.dotted_ticks(self.dots)) * divisions
-            / u128::from(TICKS_PER_QUARTER)
+        let ticks = u128::from(self.duration.dotted_ticks(self.dots)) * divisions
+            / u128::from(TICKS_PER_QUARTER);
+        self.tuplet
+            .filter(|ratio| ratio.valid())
+            .map_or(ticks, |ratio| {
+                ticks * u128::from(ratio.normal) / u128::from(ratio.actual)
+            })
     }
 
     pub fn duration_label(&self) -> String {
         self.measures.map_or_else(
             || {
                 format!(
-                    "{}{}",
+                    "{}{}{}",
                     self.duration.label(),
-                    ".".repeat(usize::from(self.dots))
+                    ".".repeat(usize::from(self.dots)),
+                    self.tuplet.map_or(String::new(), |ratio| format!(
+                        " ({}:{})",
+                        ratio.actual, ratio.normal
+                    ))
                 )
             },
             |count| crate::i18n::format("{count} measures", &[("count", format!("{}", count))]),
@@ -545,6 +558,10 @@ fn legacy_accidental_is_explicit() -> bool {
     true
 }
 
+fn default_voice() -> u8 {
+    1
+}
+
 /// `actual` notes occupy the time of `normal` notes of the same value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tuplet {
@@ -577,6 +594,8 @@ pub struct Note {
     #[serde(default = "legacy_accidental_is_explicit")]
     pub accidental_explicit: bool,
     pub duration: Duration,
+    #[serde(default = "default_voice")]
+    pub voice: u8,
     #[serde(default)]
     pub dots: u8,
     #[serde(default)]
@@ -924,6 +943,7 @@ impl Score {
             accidental: staff.accidental_at(pitch),
             accidental_explicit: false,
             duration: Duration::Quarter,
+            voice: 1,
             dots: 0,
             triplet: false,
             tuplet: None,
@@ -951,6 +971,8 @@ impl Score {
             y,
             staff: staff_index,
             duration,
+            voice: 1,
+            tuplet: None,
             dots: 0,
             measures: None,
             fermata: false,
@@ -967,6 +989,7 @@ impl Score {
             .iter()
             .filter(|note| !note.grace)
             .filter_map(|note| note.tuplet)
+            .chain(self.rests.iter().filter_map(|rest| rest.tuplet))
             .filter(|ratio| ratio.valid())
             .fold(1, |divisions, ratio| {
                 let actual = u128::from(ratio.actual);
@@ -1099,6 +1122,7 @@ impl Score {
                 || !(0..=69).contains(&note.pitch)
                 || !(-1..=1).contains(&note.accidental)
                 || note.dots > 2
+                || note.voice == 0
                 || note.tuplet.is_some_and(|ratio| !ratio.valid())
             {
                 return Err(crate::i18n::tr("Invalid note in project.").into());
@@ -1109,6 +1133,9 @@ impl Score {
                 || !rest.x.is_finite()
                 || !rest.y.is_finite()
                 || rest.dots > 2
+                || rest.voice == 0
+                || rest.tuplet.is_some_and(|ratio| !ratio.valid())
+                || (rest.measures.is_some() && rest.tuplet.is_some())
                 || (rest.measures.is_some() && rest.dots != 0)
                 || rest
                     .measures
@@ -1202,6 +1229,44 @@ impl ProjectDocument {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn voices_and_rest_tuplets_accept_legacy_and_roundtrip() {
+        let mut score: Score = serde_json::from_str(r#"{"staves":[{"lines":[20,30,40,50,60],"left":10,"right":200}],"notes":[{"x":50,"y":55,"staff":0,"pitch":31,"accidental":0,"duration":"Quarter","articulation":"None","confirmed":true}]}"#).unwrap();
+        score.add_rest(100.0, 40.0, Duration::Eighth);
+        let mut legacy = serde_json::to_value(&score).unwrap();
+        legacy["rests"][0].as_object_mut().unwrap().remove("voice");
+        legacy["rests"][0].as_object_mut().unwrap().remove("tuplet");
+        let restored: Score = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.notes[0].voice, 1);
+        assert_eq!(restored.rests[0].voice, 1);
+        assert_eq!(restored.rests[0].tuplet, None);
+        score.notes[0].voice = 4;
+        score.rests[0].voice = 3;
+        score.rests[0].tuplet = Some(Tuplet {
+            actual: 7,
+            normal: 4,
+        });
+        let restored: Score =
+            serde_json::from_value(serde_json::to_value(&score).unwrap()).unwrap();
+        assert_eq!(restored.notes[0].voice, 4);
+        assert_eq!(restored.rests[0].voice, 3);
+        assert_eq!(restored.rests[0].duration_label(), "1/8 (7:4)");
+        assert!(restored.validate().is_ok());
+        score.notes[0].voice = 0;
+        assert!(score.validate().is_err());
+        score.notes[0].voice = 1;
+        score.rests[0].voice = 0;
+        assert!(score.validate().is_err());
+        score.rests[0].voice = 1;
+        for (actual, normal) in [(0, 2), (7, 0), (65, 4)] {
+            score.rests[0].tuplet = Some(Tuplet { actual, normal });
+            assert!(score.validate().is_err());
+        }
+        score.rests[0].tuplet = Some(Tuplet::default());
+        score.rests[0].measures = Some(2);
+        assert!(score.validate().is_err());
+    }
+
     #[test]
     fn rest_fermatas_default_for_legacy_projects_and_roundtrip() {
         let mut score: Score = serde_json::from_str(r#"{"staves":[{"lines":[20,30,40,50,60],"left":10,"right":200}],"notes":[],"rests":[{"x":50,"y":40,"staff":0,"duration":"Quarter","confirmed":true,"bounds":null}]}"#).unwrap();
