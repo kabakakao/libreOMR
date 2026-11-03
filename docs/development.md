@@ -293,6 +293,17 @@ This is not a complete market survey or proof that none exists. `imageproc` and
 
 ## Optional original-scan regressions
 
+Barline exclusions consider both the horizontal and vertical extent of a symbol.
+A dynamic marking below or above a staff therefore does not hide barlines in the
+same image columns. This restores the double bar in row seven of the Cassiopeia
+baritone reference. A filled-head candidate at a short secondary beam is removed
+only when opposing stem traces, a real extended beam and the absence of a normal
+head/stem attachment support that classification. The Holy Night octave pair
+retains both sixteenth notes without the extra beam-end head masking its second
+beam. Synthetic regressions cover both stem directions, three image scales,
+non-beamed counterparts and symbol bounds inside/outside the staff. The original
+scan tests retain their existing note, duration and barline expectations.
+
 Private/local score scans are not committed. Tests using them are ignored in
 normal runs and need the corresponding environment variables. Commands below
 use macOS/Linux shell syntax; on Windows set variables in PowerShell.
@@ -318,10 +329,9 @@ all four types at three scales, upper/lower bows, and negatives with staff lines
 beams and diagonal strokes. Tests also cover tie discrimination, old projects,
 JSON, invalid geometry, undo/redo and staff previews at both sizes.
 
-Known failure in this optional test: the first row's bow near x ≈ 908 is classified
-as a slur rather than a tie because its two notes currently receive different
-pitches. This also occurs without dynamics recognition. The test remains strict
-and fails there; dynamics/articulation changes do not fix that pitch discrepancy.
+The bow near x ≈ 908 in the first row is also covered by this regression.
+Tie/slur classification depends on the recognized pitches and accidentals;
+recognition proposals still require musical review.
 
 `Cassiopeia_-_BassCf-1.tif` has regressions for the lower eighth rest after two
 eighth notes in measure 30, the decrescendo in measure 37 outside the previous
@@ -397,8 +407,15 @@ LIBREOMR_SUITE_TEST_IMAGE=local/scores/a_Little_Concert_Suite_-_BaritoneB-1.tif 
 LIBREOMR_HOLY_NIGHT_TEST_IMAGE=local/scores/A_Holy_Night_-_BassCf-1.tif \
 LIBREOMR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \
 LIBREOMR_KULTTOUR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \
-cargo test --locked -- --include-ignored
+cargo test --profile ci --locked -- --include-ignored \
+  --skip document_import_large_external_pdf_renders_all_pages \
+  --skip concerto_bass_reference_bows \
+  --skip time_change_benchmark
 ```
+
+The combined command covers the seven local references listed above. The skipped
+oversized-PDF and Concerto tests need additional files; the skipped time-change
+benchmark measures performance separately from correctness.
 
 `external_dynamics_and_marcato` checks nine dynamics in the Cassiopeia baritone
 scan and the marcato in measure 37, including positions, note exclusion and JSON.

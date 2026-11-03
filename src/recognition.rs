@@ -383,7 +383,12 @@ fn detect_barlines(
             .into_iter()
             .flatten()
             .chain(staff.header.key_bounds.iter())
-            .any(|bounds| column as f32 >= bounds.left && column as f32 <= bounds.right)
+            .any(|bounds| {
+                column as f32 >= bounds.left
+                    && column as f32 <= bounds.right
+                    && bounds.bottom >= staff.lines[0]
+                    && bounds.top <= staff.lines[4]
+            })
         {
             continue;
         }
@@ -652,43 +657,7 @@ fn detect_notes(
     let mut notes = Vec::new();
     let mut heads = crate::symbols::recognize_noteheads(binary, staff);
     let mut flags = HashMap::new();
-    // Beam/flag ends can resemble heads with a stem on either side. Keep
-    // these geometric checks unoriented; attachment preference is for the
-    // surviving heads when determining their actual note values.
-    let filled_stems: Vec<_> = heads
-        .iter()
-        .filter(|head| head.kind == crate::symbols::HeadKind::Filled)
-        .filter_map(|head| {
-            find_stem_with_tolerance(binary, head.x, head.y, gap, 0.18).map(|stem| (head.y, stem))
-        })
-        .collect();
-    remove_open_stem_artifacts(&mut heads, &filled_stems, gap);
-    heads.retain(|head| {
-        if head.kind == crate::symbols::HeadKind::Filled
-            && find_stem_with_tolerance(binary, head.x, head.y, gap, 0.18).is_some_and(|stem| {
-                filled_stems.iter().any(|(filled_y, other)| {
-                    stem.direction == -other.direction
-                        && ((stem.x - other.x).abs() as f32) < gap * 0.35
-                        && (stem.tip as f32 - filled_y).abs() < gap * 0.7
-                        && (head.y - filled_y).abs() > gap * 1.5
-                        && (((head.y - other.tip as f32).abs() < gap * 0.6
-                            && has_beam_extension(binary, *other, gap))
-                            || ((head.y - other.tip as f32).abs() < gap * 0.9
-                                && cached_flags(binary, staff, *other, &mut flags) > 0))
-                })
-            })
-        {
-            return false;
-        }
-        head.kind != crate::symbols::HeadKind::Open
-            || !find_stem_with_tolerance(binary, head.x, head.y, gap, 0.18).is_some_and(|stem| {
-                filled_stems.iter().any(|(_, other)| {
-                    stem.direction == other.direction
-                        && ((stem.x - other.x).abs() as f32) < gap * 0.3
-                        && ((stem.tip - other.tip).abs() as f32) < gap * 0.5
-                })
-            })
-    });
+    remove_stem_artifacts(binary, staff, &mut heads, &mut flags);
     let accidentals: Vec<_> = heads
         .iter()
         .map(|head| crate::symbols::recognize_accidental(binary, staff, head.x, head.y))
@@ -787,6 +756,59 @@ fn detect_notes(
     notes.sort_by(|first, second| first.x.total_cmp(&second.x));
     assign_triplets(binary, staff, rests, &mut notes);
     notes
+}
+
+fn remove_stem_artifacts(
+    binary: &GrayImage,
+    staff: &Staff,
+    heads: &mut Vec<crate::symbols::Notehead>,
+    flags: &mut HashMap<(i32, i32, i32), usize>,
+) {
+    let gap = staff.spacing();
+    // Beam/flag ends can resemble heads with opposing traces along one stem.
+    // Check both directions, protecting normally attached chord heads when
+    // looking farther inside the beam group.
+    let filled_stems: Vec<_> = heads
+        .iter()
+        .filter(|head| head.kind == crate::symbols::HeadKind::Filled)
+        .filter_map(|head| {
+            find_stem_with_tolerance(binary, head.x, head.y, gap, 0.18).map(|stem| (head.y, stem))
+        })
+        .collect();
+    remove_open_stem_artifacts(heads, &filled_stems, gap);
+    heads.retain(|head| {
+        if head.kind == crate::symbols::HeadKind::Filled
+            && find_stem_with_tolerance(binary, head.x, head.y, gap, 0.18).is_some_and(|stem| {
+                filled_stems.iter().any(|(filled_y, other)| {
+                    stem.direction == -other.direction
+                        && ((stem.x - other.x).abs() as f32) < gap * 0.35
+                        && (stem.tip as f32 - filled_y).abs() < gap * 0.7
+                        && (head.y - filled_y).abs() > gap * 1.5
+                        && {
+                            let tip_distance = (head.y - other.tip as f32) * other.direction as f32;
+                            // The second beam may lie over one space inside the stem.
+                            // An actual chord head still has its normally attached stem.
+                            let on_beam = tip_distance.abs() < gap * 0.6
+                                || ((-gap * 1.6..0.0).contains(&tip_distance)
+                                    && trace_stems(binary, head.x, head.y, gap, 0.18).1.is_none());
+                            (on_beam && has_beam_extension(binary, *other, gap))
+                                || (tip_distance.abs() < gap * 0.9
+                                    && cached_flags(binary, staff, *other, flags) > 0)
+                        }
+                })
+            })
+        {
+            return false;
+        }
+        head.kind != crate::symbols::HeadKind::Open
+            || !find_stem_with_tolerance(binary, head.x, head.y, gap, 0.18).is_some_and(|stem| {
+                filled_stems.iter().any(|(_, other)| {
+                    stem.direction == other.direction
+                        && ((stem.x - other.x).abs() as f32) < gap * 0.3
+                        && ((stem.tip - other.tip).abs() as f32) < gap * 0.5
+                })
+            })
+    });
 }
 
 fn remove_open_stem_artifacts(
@@ -2083,6 +2105,140 @@ mod tests {
                 .iter()
                 .all(|note| note.duration == Duration::Quarter)
         );
+    }
+
+    #[test]
+    fn secondary_beam_stubs_are_not_chord_heads() {
+        use crate::symbols::{HeadKind, Notehead};
+        for down in [false, true] {
+            for primary in [false, true] {
+                for scale in [0.75, 1.0, 1.5] {
+                    let mut image = GrayImage::from_pixel(240, 320, Luma([255]));
+                    let point = |x, y| if down { (240 - x, 320 - y) } else { (x, y) };
+                    for y in [100, 120, 140, 160, 180] {
+                        for x in 20..220 {
+                            let (x, y) = point(x, y);
+                            image.put_pixel(x, y, Luma([0]));
+                        }
+                    }
+                    for y in [160, 230] {
+                        let (x, y) = point(100, y);
+                        imageproc::drawing::draw_filled_ellipse_mut(
+                            &mut image,
+                            (x as i32, y as i32),
+                            13,
+                            8,
+                            Luma([0]),
+                        );
+                    }
+                    for y in 90..=230 {
+                        for x in 112..=113 {
+                            let (x, y) = point(x, y);
+                            image.put_pixel(x, y, Luma([0]));
+                        }
+                    }
+                    for (left, top, bottom) in [(20, 90, 98), (90, 112, 118)] {
+                        if top == 90 && !primary {
+                            continue;
+                        }
+                        for x in left..=113 {
+                            for y in top..=bottom {
+                                let (x, y) = point(x, y);
+                                image.put_pixel(x, y, Luma([0]));
+                            }
+                        }
+                    }
+                    let image = image::imageops::resize(
+                        &image,
+                        (240.0 * scale) as u32,
+                        (320.0 * scale) as u32,
+                        image::imageops::FilterType::Nearest,
+                    );
+                    let mut lines = [100.0, 120.0, 140.0, 160.0, 180.0]
+                        .map(|y| if down { (320.0 - y) * scale } else { y * scale });
+                    lines.sort_by(f32::total_cmp);
+                    let staff = Staff {
+                        lines,
+                        left: 0.0,
+                        right: 230.0 * scale,
+                        header: Default::default(),
+                    };
+                    // A partial beam has been proposed as a third filled head.
+                    let mut heads = [160, 230, 115]
+                        .map(|y| {
+                            let (x, y) = point(100, y);
+                            Notehead {
+                                x: x as f32 * scale,
+                                y: y as f32 * scale,
+                                kind: HeadKind::Filled,
+                            }
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    remove_stem_artifacts(&image, &staff, &mut heads, &mut HashMap::new());
+                    assert_eq!(
+                        heads.len(),
+                        if primary { 2 } else { 3 },
+                        "down {down}, primary {primary}, scale {scale}"
+                    );
+                    if primary {
+                        for head in &heads {
+                            let stem = find_stem(&image, head.x, head.y, staff.spacing()).unwrap();
+                            assert_eq!(
+                                count_beams(&image, &staff, stem, head.y, &heads, &[]),
+                                2,
+                                "down {down}, scale {scale}, head {}",
+                                head.y
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn symbols_outside_the_staff_do_not_hide_barlines() {
+        for scale in [0.75, 1.0, 1.5] {
+            let mut image = GrayImage::from_pixel(240, 280, Luma([255]));
+            for y in [80, 110, 140, 170, 200] {
+                for x in 20..220 {
+                    image.put_pixel(x, y, Luma([0]));
+                }
+            }
+            for x in 110..=112 {
+                for y in 80..=200 {
+                    image.put_pixel(x, y, Luma([0]));
+                }
+            }
+            let image = image::imageops::resize(
+                &image,
+                (240.0 * scale) as u32,
+                (280.0 * scale) as u32,
+                image::imageops::FilterType::Nearest,
+            );
+            for (top, bottom, expected) in [(30.0, 60.0, 1), (220.0, 250.0, 1), (100.0, 150.0, 0)] {
+                let staff = Staff {
+                    lines: [80.0, 110.0, 140.0, 170.0, 200.0].map(|y| y * scale),
+                    left: 20.0 * scale,
+                    right: 220.0 * scale,
+                    header: StaffHeader {
+                        key_bounds: vec![SymbolBounds {
+                            left: 100.0 * scale,
+                            right: 130.0 * scale,
+                            top: top * scale,
+                            bottom: bottom * scale,
+                        }],
+                        ..Default::default()
+                    },
+                };
+                assert_eq!(
+                    detect_barlines(&image, &staff, 0, &[]).len(),
+                    expected,
+                    "scale {scale}, bounds {top}..{bottom}"
+                );
+            }
+        }
     }
 
     #[test]
