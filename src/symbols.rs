@@ -1616,8 +1616,10 @@ fn recognize_multimeasure_rests(
                 staff: staff_index,
                 voice: 1,
                 duration: Duration::Whole,
+                tuplet: None,
                 dots: 0,
                 measures: Some(count),
+                fermata: false,
                 confirmed: false,
                 bounds: Some(SymbolBounds {
                     left: left as f32 - gap * 0.3,
@@ -1788,8 +1790,10 @@ pub fn recognize_rests(binary: &GrayImage, staff: &Staff, staff_index: usize) ->
             staff: staff_index,
             voice: 1,
             duration,
+            tuplet: None,
             dots: 0,
             measures: None,
+            fermata: false,
             confirmed: false,
             bounds: Some(bounds),
         });

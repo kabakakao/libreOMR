@@ -22,6 +22,7 @@ templates. Results require musical review and correction.
   preview, saved projects and MusicXML export.
 - Review and add articulations, dynamics, slurs, ties and repeat marks.
 - Compare the original image, recognized objects and notation preview directly.
+- Select and edit multiple notes/rests together, including voices and tuplets.
 - Undo corrections and save projects with embedded score images.
 - Export all pages together as MusicXML 4.0 for further work in tools such as MuseScore.
 - Use English or German, with the system language selected by default.
@@ -161,6 +162,8 @@ and select one or more files. The included
 [Bach example](examples/public-domain/bach-bwv1013.pdf) is a useful starting point.
 PDF and multipage TIFF files get a separate tab for each page. Pages are analyzed
 sequentially in the background.
+PDF pages render at up to 300 dpi. Large pages are scaled down to at most
+10,000 pixels per side and 64 megapixels while preserving their aspect ratio.
 
 Use **File > Add pages**, or the **+** beside the tabs, to add more pages.
 Drag tabs to reorder them; this also determines export order. **Fit**, the zoom
@@ -181,6 +184,22 @@ are grouped under **Notation options**; a count indicates active options.
 Move or delete incorrect objects. Use the score image's context menu to insert
 missing notes, rests and other symbols. Clef, key signature and time signature
 are available under **Staff information**. You can undo and redo changes.
+
+Use **Ctrl-click** (**Cmd-click** on macOS) to add or remove notes and rests
+from the selection. **Shift-click** selects a range in the scan, preview or
+object list. Shared edits include voice, duration, dots, tuplets and review
+status; notes also support shared notehead size, grace status and articulation.
+Mixed values stay unchanged until explicitly edited. Each shared edit, including
+deletion, can be undone in one step.
+
+For cue notes, assign the selected notes and rests to **Voice: 2**. Each voice
+starts at the measure boundary and is checked and exported independently; add
+preceding rests for later entries. In polyphonic measures, odd voices have
+upward stems and even voices downward stems, with rests offset accordingly.
+Notes sharing a head can be selected by their individual stems. Small noteheads
+change size independently of voice; grace notes do not add measure duration.
+Rest tuplets support **Triplet 3:2**, **Septuplet 7:4** and custom ratios.
+Multimeasure rests retain their duration during shared duration/dot/tuplet edits.
 
 For slurs, ties, crescendos and decrescendos, drag the endpoint handles onto notes or select the start and
 end notes under **Object properties**. Attached endpoints follow note corrections.
@@ -209,7 +228,7 @@ all objects (respecting the current-staff filter). The Details panel can change
 the note value or **Voice** for the selection. Delete removes the selection;
 each shared edit is one undo step.
 
-Notes and rests support **Voice 1-4** within one five-line staff. Assign each
+Notes and rests support **Voice 1-255** within one five-line staff. Assign each
 independent rhythmic line to a voice in Details, including its rests. New notes
 and rests inherit the last selected voice. Measure checks and MusicXML export keep
 voice durations separate; the preview uses opposing stems. Existing projects

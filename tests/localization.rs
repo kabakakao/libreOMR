@@ -25,11 +25,18 @@ fn changing_language_translates_labels_and_diagnostics_but_preserves_score_data(
     score.add_note(100.0, 60.0).unwrap();
     score.notes[0].duration = Duration::Quarter;
     score.notes[0].confirmed = false;
+    score.add_rest(180.0, 60.0, Duration::Eighth).unwrap();
+    score.rests[0].voice = 2;
     let serialized = serde_json::to_string(&score).unwrap();
 
     i18n::set_language(Language::English);
     assert_eq!(Clef::Treble.label(), "Treble clef");
     assert_eq!(KeySignature { fifths: -1 }.label(), "F major / D minor");
+    assert!(
+        score.measure_validities(0)[0]
+            .label()
+            .contains("Voice 2: 1/8")
+    );
     let english = musicxml::export(&score, "Score {0}").unwrap();
     assert!(
         english
@@ -47,6 +54,11 @@ fn changing_language_translates_labels_and_diagnostics_but_preserves_score_data(
     i18n::set_language(Language::German);
     assert_eq!(Clef::Treble.label(), "Violinschlüssel");
     assert_eq!(KeySignature { fifths: -1 }.label(), "F-Dur / d-Moll");
+    assert!(
+        score.measure_validities(0)[0]
+            .label()
+            .contains("Stimme 2: 1/8")
+    );
     let german = musicxml::export(&score, "Score {0}").unwrap();
     assert!(
         german
@@ -59,6 +71,18 @@ fn changing_language_translates_labels_and_diagnostics_but_preserves_score_data(
             .warnings
             .iter()
             .any(|warning| warning.contains("Takt"))
+    );
+    assert!(
+        english
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Voice 2"))
+    );
+    assert!(
+        german
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Stimme 2"))
     );
     assert_eq!(english.xml, german.xml);
     assert_eq!(serialized, serde_json::to_string(&score).unwrap());

@@ -1314,6 +1314,7 @@ fn export_ordered(
                     }
                     let polyphonic = voices.len() > 1;
                     let mut previous_elapsed = 0;
+                    let mut longest = 0;
                     for (voice_index, voice) in voices.into_iter().enumerate() {
                         if previous_elapsed > 0 {
                             xml.start("backup", &[]);
@@ -1326,6 +1327,7 @@ fn export_ordered(
                             .filter(|(_, item)| match *item {
                                 Item::Note(i) => score.notes[i].voice == voice,
                                 Item::Rest(i) => score.rests[i].voice == voice,
+                                Item::Time(_) => true,
                                 _ => voice_index == 0,
                             })
                             .collect();
@@ -1385,7 +1387,8 @@ fn export_ordered(
                                     }
                                 }
                                 Item::Time(index) => {
-                                    if repetition == 0 {
+                                    previous_note = None;
+                                    if repetition == 0 && voice_index == 0 {
                                         meter = score.time_changes[index].time_signature;
                                         let (beats, beat_unit) = meter_value(meter);
                                         measure_duration = divisions * 4 * u128::from(beats)
@@ -1455,6 +1458,7 @@ fn export_ordered(
                                     let full_measure = rest.measures.is_some()
                                 || (rest.duration == Duration::Whole
                                     && rest.dots == 0
+                                    && rest.tuplet.is_none()
                                     && voice_segment
                                         .iter()
                                         .filter(|(_, item)| {
@@ -1490,6 +1494,17 @@ fn export_ordered(
                                         for _ in 0..rest.dots {
                                             xml.empty("dot", &[]);
                                         }
+                                    }
+                                    if let Some(ratio) = rest.tuplet {
+                                        xml.start("time-modification", &[]);
+                                        xml.text("actual-notes", ratio.actual);
+                                        xml.text("normal-notes", ratio.normal);
+                                        xml.end("time-modification");
+                                    }
+                                    if rest.fermata && repetition == 0 {
+                                        xml.start("notations", &[]);
+                                        xml.empty("fermata", &[]);
+                                        xml.end("notations");
                                     }
                                     xml.end("note");
                                     elapsed += duration;
@@ -1574,6 +1589,12 @@ fn export_ordered(
                             warnings.report(issue);
                         }
                         previous_elapsed = elapsed;
+                        longest = longest.max(elapsed);
+                    }
+                    if previous_elapsed < longest {
+                        xml.start("forward", &[]);
+                        xml.text("duration", longest - previous_elapsed);
+                        xml.end("forward");
                     }
                     if repetition + 1 == count
                         && let Some(bar) = boundary
@@ -1637,6 +1658,197 @@ fn export_ordered(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parallel_voices_export_with_backup_chords_and_measure_rests() {
+        let mut score = score();
+        score.notes.clear();
+        score.staves[0].header.time_signature = Some(TimeSignature::Meter {
+            beats: 3,
+            beat_unit: 4,
+        });
+        score.add_rest(50.0, 30.0, Duration::Whole);
+        for x in [50.0, 100.0, 150.0, 151.0] {
+            score.add_note(x, 40.0);
+            score.notes.last_mut().unwrap().voice = 2;
+            score.notes.last_mut().unwrap().small = true;
+        }
+        let before = serde_json::to_value(&score).unwrap();
+        let result = export(&score, "Stichnoten").unwrap();
+        assert_xml(&result.xml);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        assert!(
+            result
+                .xml
+                .contains("<rest measure=\"yes\"/><duration>576</duration><voice>1</voice>")
+        );
+        assert!(
+            result
+                .xml
+                .contains("<backup><duration>576</duration></backup>")
+        );
+        assert_eq!(result.xml.matches("<chord/>").count(), 1);
+        assert_eq!(result.xml.matches("<voice>2</voice>").count(), 4);
+        assert_eq!(
+            result
+                .xml
+                .matches("<type size=\"cue\">quarter</type>")
+                .count(),
+            4
+        );
+        assert_eq!(score.measure_validities(0)[0].is_valid(), Some(true));
+        let pages = export_pages(&[&score, &score], "Zwei Seiten").unwrap();
+        assert_xml(&pages.xml);
+        assert_eq!(pages.xml.matches("<backup>").count(), 2);
+        assert_eq!(pages.xml.matches("<voice>2</voice>").count(), 8);
+        assert_eq!(serde_json::to_value(&score).unwrap(), before);
+    }
+
+    #[test]
+    fn short_voices_keep_independent_cursors_and_warnings() {
+        let mut score = score();
+        score.notes.truncate(1);
+        score.notes[0].duration = Duration::Whole;
+        for (voice, duration) in [(2, Duration::Half), (4, Duration::Quarter)] {
+            score.add_note(50.0, 40.0);
+            let note = score.notes.last_mut().unwrap();
+            note.voice = voice;
+            note.duration = duration;
+        }
+        let result = export(&score, "Test").unwrap();
+        assert_xml(&result.xml);
+        assert!(
+            result
+                .xml
+                .contains("<backup><duration>768</duration></backup>")
+        );
+        assert!(
+            result
+                .xml
+                .contains("<backup><duration>384</duration></backup>")
+        );
+        assert!(
+            result
+                .xml
+                .contains("<forward><duration>576</duration></forward>")
+        );
+        assert!(!result.xml.contains("<chord/>"));
+        assert_eq!(result.warnings.len(), 2);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Stimme 2") && warning.contains("zu kurz"))
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Stimme 4") && warning.contains("zu kurz"))
+        );
+        assert_eq!(score.measure_validities(0)[0].is_valid(), Some(false));
+    }
+
+    #[test]
+    fn secondary_voice_chords_do_not_cross_attribute_boundaries() {
+        let mut score = score();
+        score.notes.clear();
+        score.add_rest(50.0, 30.0, Duration::Whole);
+        for x in [100.0, 102.0] {
+            score.add_note(x, 40.0);
+            score.notes.last_mut().unwrap().voice = 2;
+        }
+        score.time_changes.push(crate::model::TimeChange {
+            staff: 0,
+            x: 101.0,
+            time_signature: TimeSignature::Cut,
+            bounds: vec![],
+            confirmed: true,
+        });
+        let result = export(&score, "Test").unwrap();
+        assert_xml(&result.xml);
+        assert!(!result.xml.contains("<chord/>"));
+        assert_eq!(
+            score.measure_validities(0)[0].voice_ticks,
+            vec![(1, 768), (2, 384)]
+        );
+    }
+
+    #[test]
+    fn mixed_note_and_rest_tuplets_export_exactly_in_second_voice() {
+        use crate::model::Tuplet;
+        for (actual, normal) in [(3, 2), (7, 4)] {
+            let mut score = score();
+            score.notes.clear();
+            score.staves[0].header.time_signature = Some(TimeSignature::Meter {
+                beats: normal / 2,
+                beat_unit: 4,
+            });
+            score.add_rest(50.0, 30.0, Duration::Whole);
+            for i in 0..actual {
+                let x = 50.0 + f32::from(i) * 40.0;
+                if i % 2 == 0 {
+                    score.add_note(x, 40.0);
+                    let note = score.notes.last_mut().unwrap();
+                    note.voice = 2;
+                    note.duration = Duration::Eighth;
+                    note.tuplet = Some(Tuplet { actual, normal });
+                } else {
+                    score.add_rest(x, 30.0, Duration::Eighth);
+                    let rest = score.rests.last_mut().unwrap();
+                    rest.voice = 2;
+                    rest.tuplet = Some(Tuplet { actual, normal });
+                }
+            }
+            let result = export(&score, "Test").unwrap();
+            assert_xml(&result.xml);
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            assert_eq!(
+                result.xml.matches("<time-modification>").count(),
+                usize::from(actual)
+            );
+            let divisions = score.rhythm_divisions();
+            let total = divisions * u128::from(normal) / 2;
+            assert!(
+                result
+                    .xml
+                    .contains(&format!("<backup><duration>{total}</duration></backup>"))
+            );
+            assert_eq!(score.measure_validities(0)[0].is_valid(), Some(true));
+        }
+    }
+
+    #[test]
+    fn rest_fermatas_export_inside_the_rest_note() {
+        for (duration, measures) in [
+            (Duration::Quarter, None),
+            (Duration::Whole, None),
+            (Duration::Whole, Some(3)),
+        ] {
+            let mut score = score();
+            score.notes.clear();
+            let index = score.add_rest(100.0, 40.0, duration).unwrap();
+            score.rests[index].measures = measures;
+            let plain = export(&score, "Test").unwrap();
+            assert!(!plain.xml.contains("<fermata"));
+            score.rests[index].fermata = true;
+            let before = serde_json::to_value(&score).unwrap();
+            let result = export(&score, "Test").unwrap();
+            assert_xml(&result.xml);
+            assert_eq!(result.xml.matches("<fermata/>").count(), 1);
+            let note = result
+                .xml
+                .split("<note>")
+                .nth(1)
+                .unwrap()
+                .split("</note>")
+                .next()
+                .unwrap();
+            assert!(note.contains("<rest"));
+            assert!(note.contains("<notations><fermata/></notations>"));
+            assert_eq!(serde_json::to_value(&score).unwrap(), before);
+        }
+    }
+
     #[test]
     fn multipage_musicxml_preserves_page_order_staff_order_and_all_object_references() {
         use crate::model::{Dynamic, DynamicKind, RepeatMark, RepeatMarkKind, TimeChange};
@@ -2035,6 +2247,8 @@ mod tests {
             assert_eq!(serde_json::to_value(&score).unwrap(), original);
             score.notes.clear();
             score.rests = vec![crate::model::Rest {
+                tuplet: None,
+                fermata: false,
                 staff: 0,
                 voice: 1,
                 x: 100.0,

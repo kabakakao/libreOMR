@@ -98,12 +98,14 @@ fn voice_assignments_roundtrip_and_legacy_projects_default_to_voice_one() {
     let legacy: Score = serde_json::from_value(json).unwrap();
     assert_eq!(legacy.notes[0].voice, 1);
     assert_eq!(legacy.rests[0].voice, 1);
-    for invalid in [0, 5] {
-        let mut invalid_score = restored.clone();
-        invalid_score.notes[0].voice = invalid;
-        assert!(invalid_score.validate().is_err());
-        invalid_score.notes[0].voice = 1;
-        invalid_score.rests[0].voice = invalid;
-        assert!(invalid_score.validate().is_err());
-    }
+    let mut extended = restored.clone();
+    extended.notes[0].voice = 255;
+    extended.rests[0].voice = 255;
+    extended.validate().unwrap();
+    let mut invalid_score = restored.clone();
+    invalid_score.notes[0].voice = 0;
+    assert!(invalid_score.validate().is_err());
+    invalid_score.notes[0].voice = 1;
+    invalid_score.rests[0].voice = 0;
+    assert!(invalid_score.validate().is_err());
 }

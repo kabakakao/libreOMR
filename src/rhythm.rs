@@ -19,7 +19,7 @@ pub struct MeasureValidity {
     pub barline: Option<usize>,
     pub divisions: u128,
     pub actual_ticks: u128,
-    /// Independent totals for the voices present in this measure.
+    /// Each present voice has its own timeline, starting at the measure boundary.
     pub voice_ticks: Vec<(u8, u128)>,
     pub expected_ticks: Option<u128>,
 }
@@ -34,22 +34,43 @@ impl MeasureValidity {
         let Some(expected) = self.expected_ticks else {
             return crate::i18n::tr("Unknown time signature: measure check unavailable").into();
         };
-        if self.voice_ticks.len() > 1 {
-            return self
+        if self.voice_ticks.len() > 1
+            || self
                 .voice_ticks
-                .iter()
-                .map(|(voice, ticks)| {
-                    crate::i18n::format(
-                        "Voice {voice}: {actual}, expected {expected}",
-                        &[
-                            ("voice", voice.to_string()),
-                            ("actual", duration_fraction(*ticks, self.divisions)),
-                            ("expected", duration_fraction(expected, self.divisions)),
-                        ],
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
+                .first()
+                .is_some_and(|(voice, _)| *voice != 1)
+        {
+            return crate::i18n::format(
+                "Measure {status}: {voices}; expected per voice {expected}",
+                &[
+                    (
+                        "status",
+                        crate::i18n::tr(if self.is_valid() == Some(true) {
+                            "valid"
+                        } else {
+                            "invalid"
+                        })
+                        .into(),
+                    ),
+                    (
+                        "voices",
+                        self.voice_ticks
+                            .iter()
+                            .map(|(voice, ticks)| {
+                                crate::i18n::format(
+                                    "Voice {voice}: {duration}",
+                                    &[
+                                        ("voice", voice.to_string()),
+                                        ("duration", duration_fraction(*ticks, self.divisions)),
+                                    ],
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                    ("expected", duration_fraction(expected, self.divisions)),
+                ],
+            );
         }
         crate::i18n::format(
             "Measure {0}: note values {1}, expected {2}",
@@ -147,20 +168,20 @@ impl Score {
                 .iter()
                 .filter(|(_, event)| !matches!(event, Event::Time(_)))
                 .count();
-            let mut voices: std::collections::BTreeMap<u8, (Option<&Note>, u128)> =
-                Default::default();
+            let mut voices: std::collections::BTreeMap<u8, (u128, Option<&Note>)> =
+                std::collections::BTreeMap::new();
             let mut measures = 1;
             for &(_, event) in segment {
                 match event {
                     Event::Time(index) => {
                         meter = Some(self.time_changes[index].time_signature);
-                        for (previous, _) in voices.values_mut() {
+                        for (_, previous) in voices.values_mut() {
                             *previous = None;
                         }
                     }
                     Event::Note(index) => {
                         let note = &self.notes[index];
-                        let (previous, actual) = voices.entry(note.voice).or_default();
+                        let (actual, previous) = voices.entry(note.voice).or_default();
                         if !previous.is_some_and(|prior| {
                             (note.x - prior.x).abs() <= staff.spacing() * 0.35
                                 && note.ticks(divisions) == prior.ticks(divisions)
@@ -171,8 +192,8 @@ impl Score {
                     }
                     Event::Rest(index) => {
                         let rest = &self.rests[index];
-                        let (previous, actual) = voices.entry(rest.voice).or_default();
-                        let count = segment
+                        let (actual, previous) = voices.entry(rest.voice).or_default();
+                        let voice_count = segment
                             .iter()
                             .filter(|(_, event)| match *event {
                                 Event::Note(i) => self.notes[i].voice == rest.voice,
@@ -181,7 +202,10 @@ impl Score {
                             })
                             .count();
                         let full_measure = rest.measures.is_some()
-                            || (rest.duration == Duration::Whole && rest.dots == 0 && count == 1);
+                            || (rest.duration == Duration::Whole
+                                && rest.dots == 0
+                                && rest.tuplet.is_none()
+                                && voice_count == 1);
                         if let Some(rest_measures) = rest.measures {
                             measures = u32::from(rest_measures);
                         }
@@ -209,13 +233,13 @@ impl Score {
                     right,
                     barline: boundary.map(|(index, _)| index),
                     divisions,
-                    actual_ticks: voices.values().map(|(_, ticks)| *ticks).max().unwrap_or(0),
+                    actual_ticks: voices.values().map(|(ticks, _)| *ticks).max().unwrap_or(0),
                     voice_ticks: if voices.is_empty() {
                         vec![(1, 0)]
                     } else {
                         voices
-                            .iter()
-                            .map(|(voice, (_, ticks))| (*voice, *ticks))
+                            .into_iter()
+                            .map(|(voice, (ticks, _))| (voice, ticks))
                             .collect()
                     },
                     expected_ticks: meter
@@ -257,6 +281,62 @@ mod tests {
             kind: Default::default(),
             confirmed: false,
         });
+    }
+
+    #[test]
+    fn voices_are_independent_and_report_short_or_long_parts() {
+        let mut score = score();
+        score.add_rest(100.0, 84.0, Duration::Whole);
+        for x in [100.0, 200.0, 300.0, 400.0] {
+            score.add_note(x, 78.0);
+            score.notes.last_mut().unwrap().voice = 2;
+        }
+        let measure = &score.measure_validities(0)[0];
+        assert_eq!(measure.is_valid(), Some(true));
+        assert_eq!(measure.voice_ticks, vec![(1, 768), (2, 768)]);
+        score.notes[0].duration = Duration::Eighth;
+        let measure = &score.measure_validities(0)[0];
+        assert_eq!(measure.actual_ticks, 768); // A full primary voice cannot hide a short second voice.
+        assert_eq!(measure.is_valid(), Some(false));
+        assert!(measure.label().contains("Stimme 2: 7/8"));
+        score.notes[0].duration = Duration::Half;
+        assert_eq!(
+            score.measure_validities(0)[0].voice_ticks,
+            vec![(1, 768), (2, 960)]
+        );
+    }
+
+    #[test]
+    fn septuplet_rests_and_notes_share_exact_voice_duration() {
+        let mut score = score();
+        score.staves[0].header.time_signature = Some(TimeSignature::Meter {
+            beats: 2,
+            beat_unit: 4,
+        });
+        score.add_rest(100.0, 84.0, Duration::Whole);
+        let ratio = crate::model::Tuplet {
+            actual: 7,
+            normal: 4,
+        };
+        for i in 0..7 {
+            let x = 100.0 + i as f32 * 30.0;
+            if i % 2 == 0 {
+                score.add_note(x, 78.0);
+                let note = score.notes.last_mut().unwrap();
+                note.duration = Duration::Eighth;
+                note.voice = 2;
+                note.tuplet = Some(ratio);
+            } else {
+                score.add_rest(x, 84.0, Duration::Eighth);
+                let rest = score.rests.last_mut().unwrap();
+                rest.voice = 2;
+                rest.tuplet = Some(ratio);
+            }
+        }
+        let measure = &score.measure_validities(0)[0];
+        assert_eq!(measure.divisions, 192 * 7);
+        assert_eq!(measure.is_valid(), Some(true));
+        assert_eq!(measure.voice_ticks, vec![(1, 384 * 7), (2, 384 * 7)]);
     }
 
     #[test]

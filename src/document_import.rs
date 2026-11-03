@@ -9,7 +9,10 @@ use std::{
 use hayro::{RenderCache, RenderSettings, hayro_interpret::InterpreterSettings, hayro_syntax::Pdf};
 use image::{GrayImage, Pixel};
 
-use crate::{image_import::decode_image, image_limits::validate_dimensions};
+use crate::{
+    image_import::decode_image,
+    image_limits::{MAX_PIXELS, MAX_SIDE, validate_dimensions},
+};
 
 pub const PDF_DPI: f32 = 300.0;
 const MAX_PDF_BYTES: u64 = 256 * 1024 * 1024;
@@ -165,32 +168,44 @@ pub fn open_document(path: &Path) -> Result<Vec<DocumentPage>, String> {
         .collect())
 }
 
-fn pdf_dimensions(width: f32, height: f32) -> Result<(u32, u32), String> {
-    let scale = PDF_DPI / 72.0;
+fn pdf_render_settings(width: f32, height: f32) -> Result<RenderSettings, String> {
     if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
         return Err(crate::i18n::tr("PDF page has invalid dimensions.").into());
     }
-    let width = (width * scale).ceil() as u32;
-    let height = (height * scale).ceil() as u32;
-    validate_dimensions(width, height)?;
-    Ok((width, height))
+    let scale = f64::from(PDF_DPI / 72.0);
+    let pixel_width = (f64::from(width) * scale).ceil();
+    let pixel_height = (f64::from(height) * scale).ceil();
+    let reduction = 1.0_f64
+        .min(f64::from(MAX_SIDE) / pixel_width)
+        .min(f64::from(MAX_SIDE) / pixel_height)
+        .min((MAX_PIXELS as f64 / (pixel_width * pixel_height)).sqrt());
+    // Round down to keep both the side and area budgets, even at their boundaries.
+    let pixel_width = (pixel_width * reduction).floor() as u32;
+    let pixel_height = (pixel_height * reduction).floor() as u32;
+    validate_dimensions(pixel_width, pixel_height)?;
+    // Scale the contents as well as the viewport: a smaller viewport alone crops
+    // the page. Render directly at this size to avoid an oversized RGBA buffer.
+    let scale = scale
+        .min(f64::from(pixel_width) / f64::from(width))
+        .min(f64::from(pixel_height) / f64::from(height)) as f32;
+    Ok(RenderSettings {
+        x_scale: scale,
+        y_scale: scale,
+        width: Some(pixel_width as u16),
+        height: Some(pixel_height as u16),
+        bg_color: hayro::vello_cpu::color::palette::css::WHITE,
+    })
 }
 
 fn render_pdf_page(pdf: &Pdf, index: usize) -> Result<GrayImage, String> {
     let page = &pdf.pages()[index];
     let (width, height) = page.render_dimensions();
-    let (width, height) = pdf_dimensions(width, height)?;
+    let settings = pdf_render_settings(width, height)?;
     let pixmap = hayro::render(
         page,
         &RenderCache::new(),
         &InterpreterSettings::default(),
-        &RenderSettings {
-            x_scale: PDF_DPI / 72.0,
-            y_scale: PDF_DPI / 72.0,
-            width: Some(width as u16),
-            height: Some(height as u16),
-            bg_color: hayro::vello_cpu::color::palette::css::WHITE,
-        },
+        &settings,
     );
     let pixels = pixmap
         .data_as_u8_slice()
@@ -199,8 +214,12 @@ fn render_pdf_page(pdf: &Pdf, index: usize) -> Result<GrayImage, String> {
         .iter()
         .map(|pixel| image::Rgb([pixel[0], pixel[1], pixel[2]]).to_luma()[0])
         .collect();
-    GrayImage::from_raw(width, height, pixels)
-        .ok_or_else(|| crate::i18n::tr("Could not rasterize PDF page.").into())
+    GrayImage::from_raw(
+        u32::from(pixmap.width()),
+        u32::from(pixmap.height()),
+        pixels,
+    )
+    .ok_or_else(|| crate::i18n::tr("Could not rasterize PDF page.").into())
 }
 
 #[cfg(test)]
@@ -307,7 +326,60 @@ mod tests {
     }
 
     #[test]
-    fn document_import_invalid_files_and_excessive_pdf_dimensions_report_errors() {
+    fn document_import_pdf_reduces_resolution_to_fit_side_and_area_budgets() {
+        for (width, height, expected) in [
+            (14472.0, 21150.0, (6617, 9671)),
+            (21150.0, 14472.0, (9671, 6617)),
+            (12000.0, 6000.0, (10000, 5000)),
+            (6000.0, 12000.0, (5000, 10000)),
+            (9000.0, 9000.0, (8000, 8000)),
+            (10000.0, 6400.0, (10000, 6400)),
+        ] {
+            let settings =
+                pdf_render_settings(width / (PDF_DPI / 72.0), height / (PDF_DPI / 72.0)).unwrap();
+            let size = (
+                u32::from(settings.width.unwrap()),
+                u32::from(settings.height.unwrap()),
+            );
+            assert_eq!(size, expected);
+            validate_dimensions(size.0, size.1).unwrap();
+            assert_eq!(settings.x_scale, settings.y_scale);
+            assert!(settings.x_scale <= PDF_DPI / 72.0);
+        }
+        // Large finite PDF coordinates must not overflow before being scaled.
+        let settings = pdf_render_settings(f32::MAX, f32::MAX).unwrap();
+        assert_eq!(settings.width, settings.height);
+        assert!((7999..=8000).contains(&settings.width.unwrap()));
+    }
+
+    #[test]
+    fn document_import_oversized_pdf_renders_both_edges_without_cropping() {
+        let pdf = Pdf::new(include_bytes!("../tests/fixtures/wide-page.pdf").to_vec()).unwrap();
+        let image = render_pdf_page(&pdf, 0).unwrap();
+        assert_eq!(image.dimensions(), (10000, 166));
+        for y in [5, 160] {
+            assert_eq!(image.get_pixel(10, y)[0], 0);
+            assert_eq!(image.get_pixel(4900, y)[0], 0);
+            assert_eq!(image.get_pixel(6000, y)[0], 255);
+            assert_eq!(image.get_pixel(9900, y)[0], 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires LIBREOMR_LARGE_PDF pointing to a local oversized PDF"]
+    fn document_import_large_external_pdf_renders_all_pages() {
+        let path = PathBuf::from(std::env::var_os("LIBREOMR_LARGE_PDF").unwrap());
+        let pages = open_document(&path).unwrap();
+        for page in pages {
+            let image = page.render().unwrap();
+            validate_dimensions(image.width(), image.height()).unwrap();
+            assert!(image.pixels().any(|pixel| pixel[0] < 128));
+            println!("{}: {} x {}", page.name(), image.width(), image.height());
+        }
+    }
+
+    #[test]
+    fn document_import_invalid_files_and_pdf_dimensions_report_errors() {
         let directory = tempfile::tempdir().unwrap();
         for name in ["bad.pdf", "bad.tif"] {
             let path = directory.path().join(name);
@@ -321,11 +393,13 @@ mod tests {
             (f32::NAN, 72.0),
             (0.0, 72.0),
             (f32::INFINITY, 72.0),
+            (72.0, f32::NAN),
+            (72.0, -1.0),
             (1_000_000.0, 72.0),
             (72.0, 1_000_000.0),
             (1.0, 1.0),
         ] {
-            assert!(pdf_dimensions(width, height).is_err());
+            assert!(pdf_render_settings(width, height).is_err());
         }
     }
 }

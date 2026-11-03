@@ -71,7 +71,9 @@ are required. See [Screenshots](../assets/screenshots/README.md) for captures.
   Bravura symbols, scrolling and note/rest selection; transparent accidental
   glyphs and shared slur/tie/wedge drawing for preview and scan overlay.
 - `src/document_import.rs`: page discovery and page-by-page PDF/TIFF/image import;
-  PDF rasterization with `hayro` at 300 dpi on white, with image-size validation.
+  PDF rasterization with `hayro` at up to 300 dpi on white. Large pages render
+  directly at a reduced resolution (at most 10,000 pixels per side and
+  64 megapixels) while preserving their aspect ratio.
   PDF pages share one loaded document without rasterizing all pages up front.
 - `src/tiff_import.rs`: TIFF image-directory enumeration and selection, with a
   Fax3 fallback using `hayro-ccitt` and `tiff` metadata. Other compression types
@@ -93,7 +95,7 @@ font or a package containing it. Templates do not store crops from user scores.
 
 ## Manual voices and multiple selection
 
-Notes and rests store a voice number from 1 to 4, defaulting to 1 when an older
+Notes and rests store a voice number from 1 to 255, defaulting to 1 when an older
 project omits the field. The editor supports Ctrl/Cmd toggles and Shift ranges
 across the scan, preview and object list. Shared voice/duration edits and
 selection deletion create one history entry; note deletion retains lyric
@@ -113,7 +115,7 @@ dense beams, chords, damaged/open hollow shapes, text and other symbols.
 Separate heads sharing a stem are detected, but full chord/voice assignment is
 not reconstructed. The preview displays the model rather than validated
 engraving. Spacing is adjusted for readability; eighth through sixty-fourth
-notes use flags instead of reconstructed beam groups. Full voice assignment,
+notes use flags instead of reconstructed beam groups. Automatic voice assignment,
 rhythmic completeness and engraving/line-breaking logic remain incomplete.
 
 Staff detection expects lines spanning at least about 45% of image width.
@@ -291,6 +293,17 @@ This is not a complete market survey or proof that none exists. `imageproc` and
 
 ## Optional original-scan regressions
 
+Barline exclusions consider both the horizontal and vertical extent of a symbol.
+A dynamic marking below or above a staff therefore does not hide barlines in the
+same image columns. This restores the double bar in row seven of the Cassiopeia
+baritone reference. A filled-head candidate at a short secondary beam is removed
+only when opposing stem traces, a real extended beam and the absence of a normal
+head/stem attachment support that classification. The Holy Night octave pair
+retains both sixteenth notes without the extra beam-end head masking its second
+beam. Synthetic regressions cover both stem directions, three image scales,
+non-beamed counterparts and symbol bounds inside/outside the staff. The original
+scan tests retain their existing note, duration and barline expectations.
+
 Private/local score scans are not committed. Tests using them are ignored in
 normal runs and need the corresponding environment variables. Commands below
 use macOS/Linux shell syntax; on Windows set variables in PowerShell.
@@ -316,10 +329,9 @@ all four types at three scales, upper/lower bows, and negatives with staff lines
 beams and diagonal strokes. Tests also cover tie discrimination, old projects,
 JSON, invalid geometry, undo/redo and staff previews at both sizes.
 
-Known failure in this optional test: the first row's bow near x ≈ 908 is classified
-as a slur rather than a tie because its two notes currently receive different
-pitches. This also occurs without dynamics recognition. The test remains strict
-and fails there; dynamics/articulation changes do not fix that pitch discrepancy.
+The bow near x ≈ 908 in the first row is also covered by this regression.
+Tie/slur classification depends on the recognized pitches and accidentals;
+recognition proposals still require musical review.
 
 `Cassiopeia_-_BassCf-1.tif` has regressions for the lower eighth rest after two
 eighth notes in measure 30, the decrescendo in measure 37 outside the previous
@@ -395,8 +407,15 @@ LIBREOMR_SUITE_TEST_IMAGE=local/scores/a_Little_Concert_Suite_-_BaritoneB-1.tif 
 LIBREOMR_HOLY_NIGHT_TEST_IMAGE=local/scores/A_Holy_Night_-_BassCf-1.tif \
 LIBREOMR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \
 LIBREOMR_KULTTOUR_TEST_PDF=local/scores/80er_KULTtour_2_-_Bass2Cf.pdf \
-cargo test --locked -- --include-ignored
+cargo test --profile ci --locked -- --include-ignored \
+  --skip document_import_large_external_pdf_renders_all_pages \
+  --skip concerto_bass_reference_bows \
+  --skip time_change_benchmark
 ```
+
+The combined command covers the seven local references listed above. The skipped
+oversized-PDF and Concerto tests need additional files; the skipped time-change
+benchmark measures performance separately from correctness.
 
 `external_dynamics_and_marcato` checks nine dynamics in the Cassiopeia baritone
 scan and the marcato in measure 37, including positions, note exclusion and JSON.
@@ -514,3 +533,41 @@ four staff lines. This recovers gently curved scan rows and excludes isolated
 page borders. Global deskew acceptance still uses the full-width projection.
 Lyrics can be attached above or below the same note; placement is part of their
 identity and survives project serialization, editing, preview and MusicXML.
+
+## Multiple selection and rhythmic voices
+
+Notes and rests store a positive `voice` number (1 to 255); legacy projects
+load into voice 1. Rests also support an optional `tuplet` ratio with the same
+exact time resolution as notes. Each present voice is summed and checked from
+the measure boundary; preceding rests for later entries must be explicit.
+Chords group only within a voice. A whole rest alone in a voice follows the
+meter even alongside cue notes in another voice. Recognition initially assigns
+all notes and rests to voice 1.
+
+MusicXML writes voice numbers on every note/rest and uses `backup` between
+voices. Warnings identify the inconsistent voice; tuplet rests receive
+`time-modification`. Notehead size remains independent of voice and grace status.
+
+`src/app/selection.rs` handles range/toggle selection and shared edits.
+Ctrl/Cmd-click toggles objects; Shift-click selects a range in printed order.
+Selection persists per page and resets on undo/redo, deletion or closing details.
+Each shared edit creates one undo step; mixed or unchanged properties remain
+untouched. Multimeasure rests participate only in voice, review and deletion edits.
+New editor labels, voice tooltips and rhythmic diagnostics use the English/German
+catalogs so changing language preserves the selection and score data.
+
+Regressions cover parallel voices, chords, measure rests, short/long voices,
+note/rest triplets and septuplets, legacy projects, multipage export, selection,
+mixed properties and atomic undo/redo. Optional MusicXML schema validation also
+covers these export cases:
+
+```sh
+LIBREOMR_MUSICXML_SCHEMA=/path/to/musicxml.xsd cargo test --profile ci --locked musicxml
+cargo test --profile ci --locked app::selection
+```
+
+In polyphonic measures, odd voices have upward stems and even voices downward
+stems; rests are offset accordingly. Single-voice measures retain pitch-based
+stem direction, including in the isolated object preview. Spacing, flags, rest
+dots and hit areas follow the displayed geometry. Stems sharing a notehead can
+be selected independently. Scan labels do not add voice numbers.
